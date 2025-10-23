@@ -3,7 +3,7 @@ import path from "path";
 import react from "@vitejs/plugin-react";
 import { exec } from "node:child_process";
 import pino from "pino";
-import { cloudflare } from "@cloudflare/vite-plugin";
+// Cloudflare Workers eliminado - usando servidor local con FTP
 
 const logger = pino();
 
@@ -89,7 +89,7 @@ function watchDependenciesPlugin() {
 export default ({ mode }: { mode: string }) => {
   const env = loadEnv(mode, process.cwd());
   return defineConfig({
-    plugins: [react(), cloudflare(), watchDependenciesPlugin()],
+    plugins: [react(), watchDependenciesPlugin()],
     build: {
       minify: true,
       sourcemap: "inline", // Use inline source maps for better error reporting
@@ -106,6 +106,12 @@ export default ({ mode }: { mode: string }) => {
     },
     server: {
       allowedHosts: true,
+      proxy: {
+        '/api': {
+          target: 'http://localhost:5000',
+          changeOrigin: true,
+        }
+      }
     },
     resolve: {
       alias: {

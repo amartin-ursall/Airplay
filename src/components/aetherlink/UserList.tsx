@@ -18,7 +18,7 @@ export function UserList({ onUserSelect }: UserListProps) {
       logout: state.logout,
     }))
   );
-  const otherUsers = users.filter(u => u.id !== currentUser?.id);
+  const otherUsers = users.filter(u => u.id !== currentUser?.id && u.online);
   const handleSelectUser = (userId: string) => {
     setActiveConversationId(userId);
     onUserSelect?.();
@@ -39,7 +39,7 @@ export function UserList({ onUserSelect }: UserListProps) {
       </div>
       <ScrollArea className="flex-1">
         <div className="p-4 space-y-2">
-          <h3 className="text-sm font-medium text-muted-foreground px-2">Online Users ({otherUsers.length})</h3>
+          <h3 className="text-sm font-medium text-muted-foreground px-2">Usuarios Online ({otherUsers.length})</h3>
           {otherUsers.map((user) => (
             <button
               key={user.id}

@@ -16,12 +16,27 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 function SetNameModal({ onNameSet }: { onNameSet: (user: User) => void }) {
   const [name, setName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
+
     if (!name.trim()) {
-      toast.error("Please enter a name.");
+      setError("Por favor, introduce un nombre de usuario.");
       return;
     }
+
+    if (name.trim().length < 2) {
+      setError("El nombre debe tener al menos 2 caracteres.");
+      return;
+    }
+
+    if (name.trim().length > 50) {
+      setError("El nombre no puede exceder 50 caracteres.");
+      return;
+    }
+
     setIsLoading(true);
     try {
       const user = await api<User>('/api/users/login', {
@@ -29,10 +44,19 @@ function SetNameModal({ onNameSet }: { onNameSet: (user: User) => void }) {
         body: JSON.stringify({ name: name.trim() }),
       });
       localStorage.setItem('aetherlink-user', JSON.stringify(user));
+      toast.success(`¡Bienvenido, ${user.name}!`);
       onNameSet(user);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login failed:", error);
-      toast.error("Could not set name. Please try again.");
+
+      // Check if it's a duplicate username error (409 Conflict)
+      if (error?.status === 409) {
+        setError(error.message || "Este nombre de usuario ya está en uso. Por favor, elige otro.");
+      } else if (error?.message) {
+        setError(error.message);
+      } else {
+        setError("No se pudo establecer el nombre. Por favor, inténtalo de nuevo.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -41,23 +65,35 @@ function SetNameModal({ onNameSet }: { onNameSet: (user: User) => void }) {
     <Dialog open={true}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle className="text-2xl font-bold text-center">Welcome to AetherLink</DialogTitle>
+          <DialogTitle className="text-2xl font-bold text-center">Bienvenido a Airplay</DialogTitle>
           <DialogDescription className="text-center">
-            Enter your display name to join the network.
+            Introduce tu nombre de usuario para comenzar.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="grid gap-4 py-4">
-          <Input
-            id="name"
-            placeholder="Your Name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="text-base"
-            autoFocus
-          />
+          <div className="grid gap-2">
+            <Input
+              id="name"
+              placeholder="Nombre de usuario"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setError(null); // Clear error when user types
+              }}
+              className={`text-base ${error ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
+              autoFocus
+              maxLength={50}
+            />
+            {error && (
+              <p className="text-sm text-red-500 font-medium">{error}</p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Entre 2 y 50 caracteres. El nombre debe ser único.
+            </p>
+          </div>
           <Button type="submit" disabled={isLoading}>
             {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Join
+            Entrar
           </Button>
         </form>
       </DialogContent>
@@ -105,9 +141,9 @@ export function HomePage() {
           <div className="text-center">
             <div className="inline-flex items-center gap-2 mb-4">
               <Link className="w-8 h-8 text-indigo-600" />
-              <h1 className="text-3xl font-bold">AetherLink</h1>
+              <h1 className="text-3xl font-bold">Airplay</h1>
             </div>
-            <p className="text-muted-foreground">Initializing session...</p>
+            <p className="text-muted-foreground">Entrando...</p>
           </div>
         </div>
         <SetNameModal onNameSet={setCurrentUser} />

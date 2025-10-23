@@ -50,6 +50,13 @@ export const useAppStore = create<AppState & AppActions>()(
           if (!conversation.messages.some(m => m.id === message.id)) {
             conversation.messages.push(message);
           }
+        } else {
+          // Create conversation if it doesn't exist
+          state.conversations[message.conversationId] = {
+            id: message.conversationId,
+            participants: [message.senderId, message.conversationId],
+            messages: [message]
+          };
         }
       });
     },
