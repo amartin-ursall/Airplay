@@ -50,7 +50,7 @@ app.onError((err, c) => {
 });
 
 const port = 5000; // Puerto para backend API
-const ftpPort = 2121; // Puerto FTP alternativo (puerto 21 requiere privilegios de administrador)
+const ftpPort = 5001; // Puerto FTP (puerto 21 requiere privilegios de administrador)
 
 // Iniciar servidor HTTP con límites aumentados para soportar archivos grandes
 console.log(`\n========================================`);
