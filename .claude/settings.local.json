@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(curl:*)"
+      "Bash(powershell:*)",
+      "Bash(ipconfig:*)",
+      "Bash(pm2 reload:*)",
+      "Bash(pm2 status:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(if not exist logs mkdir logs)",
+      "Bash(mkdir:*)",
+      "Bash(npm install:*)"
     ],
     "deny": [],
     "ask": []

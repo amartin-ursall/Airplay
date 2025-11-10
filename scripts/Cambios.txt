@@ -1,0 +1,16 @@
+Para implementar YA:
+🔒 Sanitización de nombres de archivo (30 min, crítico)
+💾 SQLite para persistencia (2-3 horas)
+🌐 WebSockets (1 día, gran impacto en UX)
+⚡ Chunks paralelos (2-3 horas, mejor velocidad)
+📁 Cola de múltiples archivos (3-4 horas)
+Para mejorar UX:
+🔄 Reanudación de subidas (1 día)
+📱 Indicador de conexión (1 hora)
+🔍 Búsqueda de archivos (2 horas)
+🖼️ Preview de imágenes (3 horas)
+🗑️ Borrar archivos/conversaciones (2 horas)
+Innovadoras:
+🎯 Salas temporales con código (1 día)
+📱 Compartir con QR (2 horas)
+⏰ Expiración de archivos (3 horas)

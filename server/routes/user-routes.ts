@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import type { User, Conversation } from '../../shared/types';
-import { db, InMemoryDB } from '../db/in-memory-db';
+import { db, InMemoryDB } from '../db/database';
+import { sanitizeUsername } from '../utils/sanitization';
+import { getWebSocketService } from '../services/websocket-service';
 
 function getUserId(c: any): string | undefined {
   return c.req.header('X-User-Id');
@@ -40,10 +42,18 @@ export function userRoutes(app: Hono) {
         return c.json({ success: false, error: 'El nombre no puede exceder 50 caracteres' }, 400);
       }
 
+      // Sanitizar el nombre de usuario para prevenir path traversal y caracteres peligrosos
+      const sanitizedName = sanitizeUsername(trimmedName);
+
+      // Si el nombre sanitizado es muy diferente, advertir al usuario
+      if (sanitizedName !== trimmedName) {
+        console.log(`[Login] Username sanitized: "${trimmedName}" -> "${sanitizedName}"`);
+      }
+
       // Verificar si el nombre ya existe (case-insensitive)
-      const existingUser = db.getUserByName(trimmedName);
+      const existingUser = db.getUserByName(sanitizedName);
       if (existingUser) {
-        console.log(`[Login] Username "${trimmedName}" already exists`);
+        console.log(`[Login] Username "${sanitizedName}" already exists`);
         return c.json({
           success: false,
           error: 'Este nombre de usuario ya está en uso. Por favor, elige otro.'
@@ -53,7 +63,7 @@ export function userRoutes(app: Hono) {
       const userId = crypto.randomUUID();
       const user: User = {
         id: userId,
-        name: trimmedName,
+        name: sanitizedName,
         online: true,
         lastSeen: Date.now()
       };
@@ -61,8 +71,15 @@ export function userRoutes(app: Hono) {
       db.createUser(user);
       await updateUserPresence(userId);
 
-      console.log(`[Login] New user created: "${trimmedName}" (${userId})`);
+      console.log(`[Login] New user created: "${sanitizedName}" (${userId})`);
       c.header('X-User-Id', userId);
+
+      // Notificar a todos los clientes sobre el nuevo usuario
+      const wsService = getWebSocketService();
+      if (wsService) {
+        wsService.notifyUsersUpdate();
+      }
+
       return c.json({ success: true, data: user });
     } catch (error) {
       console.error('[Login] Error:', error);
@@ -140,6 +157,16 @@ export function userRoutes(app: Hono) {
         return c.json({ success: false, error: 'recipientId and content required' }, 400);
       }
 
+      // Sanitizar el contenido del mensaje (remover caracteres peligrosos pero mantener la legibilidad)
+      const sanitizedContent = content
+        .trim()
+        .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '') // Remover caracteres de control
+        .substring(0, 10000); // Limitar longitud a 10k caracteres
+
+      if (!sanitizedContent) {
+        return c.json({ success: false, error: 'El mensaje no puede estar vacío' }, 400);
+      }
+
       console.log(`[Backend] Text message from ${currentUserId} to ${recipientId}`);
 
       const conversationId = InMemoryDB.getConversationId(currentUserId, recipientId);
@@ -160,13 +187,19 @@ export function userRoutes(app: Hono) {
         id: crypto.randomUUID(),
         conversationId,
         senderId: currentUserId,
-        content: content.trim(),
+        content: sanitizedContent,
         timestamp: Date.now(),
         type: 'text' as const
       };
 
       // Agregar a la conversación en memoria
       db.addMessageToConversation(conversationId, message);
+
+      // Notificar a través de WebSocket
+      const wsService = getWebSocketService();
+      if (wsService) {
+        wsService.notifyNewMessage(message, currentUserId);
+      }
 
       // Persistir en archivo .txt
       const sender = db.getUser(currentUserId);

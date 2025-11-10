@@ -105,10 +105,12 @@ export default ({ mode }: { mode: string }) => {
       devSourcemap: true,
     },
     server: {
+      host: '0.0.0.0', // Escuchar en todas las interfaces de red para acceso desde otros dispositivos
+      port: 3001,
       allowedHosts: true,
       proxy: {
         '/api': {
-          target: 'http://localhost:5000',
+          target: 'http://localhost:5001',
           changeOrigin: true,
         }
       }

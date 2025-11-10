@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import type { FileMetadata } from '../../shared/types';
-import { db, InMemoryDB } from '../db/in-memory-db';
+import { db, InMemoryDB } from '../db/database';
 import { FileStorageService } from '../services/file-storage';
 import { MessageStorageService } from '../services/message-storage';
+import { sanitizeFilename, isFilenameSafe } from '../utils/sanitization';
+import { getWebSocketService } from '../services/websocket-service';
 
 const CHUNK_SIZE = 512 * 1024; // 512KB - must match client chunk size
 
@@ -29,12 +31,24 @@ export function fileRoutes(app: Hono) {
         return c.json({ success: false, error: 'recipientId and file metadata required' }, 400);
       }
 
+      // Validar y sanitizar el nombre de archivo
+      if (!file.name || !isFilenameSafe(file.name)) {
+        console.warn(`[Backend] Unsafe filename detected: ${file.name}`);
+        return c.json({ success: false, error: 'Invalid filename' }, 400);
+      }
+
+      // Sanitizar el nombre de archivo en los metadatos
+      const sanitizedFile = {
+        ...file,
+        name: sanitizeFilename(file.name)
+      };
+
       const fileId = crypto.randomUUID();
-      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+      const totalChunks = Math.ceil(sanitizedFile.size / CHUNK_SIZE);
 
-      db.initiateFileUpload(fileId, file, totalChunks);
+      db.initiateFileUpload(fileId, sanitizedFile, totalChunks);
 
-      console.log(`[Backend] File upload initiated: ${fileId}, ${totalChunks} chunks`);
+      console.log(`[Backend] File upload initiated: ${fileId}, ${totalChunks} chunks, name: ${sanitizedFile.name}`);
       return c.json({ success: true, data: { fileId } });
     } catch (error) {
       console.error('[FileInit] Error:', error);
@@ -135,6 +149,12 @@ export function fileRoutes(app: Hono) {
 
             db.addMessageToConversation(conversationId, message);
 
+            // Notificar a través de WebSocket
+            const wsService = getWebSocketService();
+            if (wsService) {
+              wsService.notifyNewMessage(message, currentUserId);
+            }
+
             // Persistir mensaje en archivo .txt
             await MessageStorageService.saveMessage(
               sender.name,
@@ -182,6 +202,12 @@ export function fileRoutes(app: Hono) {
 
       if (!currentUser || !otherUser) {
         return c.json({ success: false, error: 'Users not found' }, 404);
+      }
+
+      // Validar el nombre de archivo antes de intentar leerlo
+      if (!isFilenameSafe(fileId)) {
+        console.warn(`[Backend] Unsafe filename in download request: ${fileId}`);
+        return c.json({ success: false, error: 'Invalid filename' }, 400);
       }
 
       // El fileId es el nombre del archivo guardado

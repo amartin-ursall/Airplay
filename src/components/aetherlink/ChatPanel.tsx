@@ -16,7 +16,7 @@ const CHUNK_SIZE = 512 * 1024; // 512KB chunks - smaller for better reliability
 const MAX_FILE_SIZE = 350 * 1024 * 1024; // 350MB maximum file size
 const CHUNK_TIMEOUT = 120000; // 120 seconds timeout per chunk (2 minutes)
 const MAX_RETRIES = 5; // Maximum retries per chunk
-const CONCURRENT_UPLOADS = 1; // Upload chunks sequentially to avoid overwhelming the server
+const CONCURRENT_UPLOADS = 3; // Upload 3 chunks in parallel for better speed
 
 // Polyfill for crypto.randomUUID
 function generateUUID(): string {
@@ -48,6 +48,8 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [textMessage, setTextMessage] = useState('');
+  const [uploadQueue, setUploadQueue] = useState<File[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
@@ -187,30 +189,66 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
       });
 
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-      const estimatedTime = Math.ceil((totalChunks * 3) / 60); // Rough estimate: 3s per chunk
-      console.log(`📤 Starting upload: ${totalChunks} chunks of ${CHUNK_SIZE / 1024}KB each (~${estimatedTime} min)`);
+      const estimatedTime = Math.ceil((totalChunks * 1.5) / 60); // Faster estimate with parallel uploads
+      const startTime = Date.now();
+      console.log(`📤 Starting upload: ${totalChunks} chunks of ${CHUNK_SIZE / 1024}KB each (${CONCURRENT_UPLOADS} parallel, ~${estimatedTime} min)`);
 
-      for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_SIZE;
-        const end = start + CHUNK_SIZE;
-        const chunk = file.slice(start, end);
+      // Track completed chunks for progress
+      let completedChunks = 0;
 
-        // Upload chunk with timeout and retry logic
-        await uploadChunkWithRetry(fileId, i, chunk, currentUser.id, activeConversationId, totalChunks);
+      // Function to process chunks with concurrency limit
+      const uploadChunksInParallel = async () => {
+        const queue: number[] = Array.from({ length: totalChunks }, (_, i) => i);
+        const activeUploads: Set<Promise<void>> = new Set();
 
-        const progress = Math.round(((i + 1) / totalChunks) * 100);
-        updateMessageProgress(convId, tempMessageId, progress);
+        while (queue.length > 0 || activeUploads.size > 0) {
+          // Start new uploads up to the concurrency limit
+          while (activeUploads.size < CONCURRENT_UPLOADS && queue.length > 0) {
+            const chunkIndex = queue.shift()!;
+            const start = chunkIndex * CHUNK_SIZE;
+            const end = start + CHUNK_SIZE;
+            const chunk = file.slice(start, end);
 
-        // Log progress every 10%
-        if (progress % 10 === 0) {
-          const elapsed = ((Date.now() - Date.now()) / 1000 / 60).toFixed(1);
-          console.log(`📊 Progress: ${progress}% (${i + 1}/${totalChunks} chunks)`);
+            const uploadPromise = (async () => {
+              try {
+                await uploadChunkWithRetry(fileId, chunkIndex, chunk, currentUser.id, activeConversationId, totalChunks);
+
+                completedChunks++;
+                const progress = Math.round((completedChunks / totalChunks) * 100);
+                updateMessageProgress(convId, tempMessageId, progress);
+
+                // Log progress every 10 chunks
+                if (completedChunks % 10 === 0 || completedChunks === totalChunks) {
+                  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                  const speed = (completedChunks * CHUNK_SIZE / 1024 / 1024 / (Date.now() - startTime) * 1000).toFixed(2);
+                  console.log(`📊 Progress: ${progress}% (${completedChunks}/${totalChunks} chunks, ${elapsed}s, ${speed} MB/s)`);
+                }
+              } catch (error) {
+                // Re-throw to be caught by outer try-catch
+                throw error;
+              }
+            })();
+
+            activeUploads.add(uploadPromise);
+            uploadPromise.finally(() => activeUploads.delete(uploadPromise));
+          }
+
+          // Wait for at least one upload to complete before adding more
+          if (activeUploads.size > 0) {
+            await Promise.race(activeUploads);
+          }
         }
-      }
+      };
+
+      await uploadChunksInParallel();
+
+      // Calculate final stats
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+      const avgSpeed = (file.size / 1024 / 1024 / (Date.now() - startTime) * 1000).toFixed(2);
 
       // Success notification
       toast.success(`${file.name} uploaded successfully!`, {
-        description: `${fileSizeMB} MB uploaded. File is now available for download.`,
+        description: `${fileSizeMB} MB uploaded in ${totalTime}s (${avgSpeed} MB/s)`,
         duration: 4000,
       });
 
@@ -262,11 +300,34 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
   };
 
   const onFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      handleSendFile(file);
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      // Add all selected files to the queue
+      const fileArray = Array.from(files);
+      addFilesToQueue(fileArray);
     }
     if (e.target) e.target.value = '';
+  };
+
+  // Add files to upload queue
+  const addFilesToQueue = (files: File[]) => {
+    const validFiles = files.filter(file => {
+      if (file.size > MAX_FILE_SIZE) {
+        toast.error(`${file.name} is too large (max 350MB)`);
+        return false;
+      }
+      return true;
+    });
+
+    if (validFiles.length > 0) {
+      setUploadQueue(prev => [...prev, ...validFiles]);
+      toast.info(`${validFiles.length} file(s) added to queue`);
+    }
+  };
+
+  // Remove file from queue
+  const removeFromQueue = (index: number) => {
+    setUploadQueue(prev => prev.filter((_, i) => i !== index));
   };
 
   // Drag and drop handlers
@@ -301,10 +362,35 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
 
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
-      const file = files[0];
-      handleSendFile(file);
+      // Add all dropped files to the queue
+      const fileArray = Array.from(files);
+      addFilesToQueue(fileArray);
     }
   };
+
+  // Process upload queue
+  useEffect(() => {
+    const processQueue = async () => {
+      if (uploadQueue.length > 0 && !isUploading) {
+        setIsUploading(true);
+        const file = uploadQueue[0];
+
+        try {
+          await handleSendFile(file);
+          // Remove successfully uploaded file from queue
+          setUploadQueue(prev => prev.slice(1));
+        } catch (error) {
+          console.error('File upload failed:', error);
+          // Keep file in queue but mark as failed or remove
+          setUploadQueue(prev => prev.slice(1));
+        } finally {
+          setIsUploading(false);
+        }
+      }
+    };
+
+    processQueue();
+  }, [uploadQueue, isUploading]);
   const usersById = new Map(users.map(u => [u.id, u]));
   if (currentUser) usersById.set(currentUser.id, currentUser);
   if (!activeConversationId || !recipient) {
@@ -376,9 +462,58 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
           )}
         </div>
       </ScrollArea>
+
+      {/* Upload Queue UI */}
+      {uploadQueue.length > 0 && (
+        <div className="px-4 py-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-foreground">
+              Upload Queue ({uploadQueue.length} file{uploadQueue.length !== 1 ? 's' : ''})
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setUploadQueue([])}
+              className="h-6 text-xs"
+              disabled={isUploading}
+            >
+              Clear All
+            </Button>
+          </div>
+          <div className="space-y-1 max-h-32 overflow-y-auto">
+            {uploadQueue.map((file, index) => (
+              <div
+                key={index}
+                className="flex items-center justify-between px-3 py-2 bg-background rounded border border-slate-200 dark:border-slate-700"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate text-foreground">
+                    {file.name}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {(file.size / (1024 * 1024)).toFixed(2)} MB
+                    {index === 0 && isUploading && ' - Uploading...'}
+                  </p>
+                </div>
+                {index !== 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeFromQueue(index)}
+                    className="h-6 w-6 p-0 ml-2"
+                  >
+                    ✕
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <footer className="p-4 border-t border-slate-200 dark:border-slate-800 bg-background">
         <div className="flex items-center gap-2">
-          <input type="file" ref={fileInputRef} onChange={onFileSelect} className="hidden" />
+          <input type="file" ref={fileInputRef} onChange={onFileSelect} className="hidden" multiple />
           <Button
             variant="outline"
             size="icon"

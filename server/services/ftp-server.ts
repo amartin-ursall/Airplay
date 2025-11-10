@@ -3,8 +3,9 @@ import { homedir } from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import type { Conversation } from '../../shared/types';
+import { sanitizeUsername } from '../utils/sanitization';
 
-const BASE_DIR = path.join(homedir(), 'Documents', 'ConversacionesAirplay');
+const BASE_DIR = path.join(homedir(), 'Documents', 'ftp', 'Airplay');
 
 export class FTPServerService {
   private ftpServer: any;
@@ -25,7 +26,7 @@ export class FTPServerService {
       pasv_url: `ftp://${this.host}`,
       pasv_min: 1024,
       pasv_max: 1048,
-      greeting: ['Bienvenido al servidor FTP de ConversacionesAirplay'],
+      greeting: ['Bienvenido al servidor FTP de Airplay'],
       anonymous: false // Requiere autenticación
     });
 
@@ -68,6 +69,7 @@ export class FTPServerService {
 
   /**
    * Sincroniza las conversaciones existentes creando sus carpetas en el FTP
+   * Los nombres de usuario son sanitizados para prevenir vulnerabilidades
    */
   static async syncExistingConversations(conversations: Conversation[], userNamesMap: Map<string, string>): Promise<void> {
     console.log(`[FTP] Sincronizando ${conversations.length} conversaciones existentes...`);
@@ -83,8 +85,12 @@ export class FTPServerService {
           continue;
         }
 
+        // Sanitizar nombres de usuario antes de crear carpetas
+        const sanitizedName1 = sanitizeUsername(userName1);
+        const sanitizedName2 = sanitizeUsername(userName2);
+
         // Crear carpeta de conversación
-        const folderName = [userName1, userName2].sort().join('-');
+        const folderName = [sanitizedName1, sanitizedName2].sort().join('-');
         const conversationPath = path.join(BASE_DIR, folderName);
         const filesPath = path.join(conversationPath, 'Archivos');
 
