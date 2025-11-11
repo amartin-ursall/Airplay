@@ -12,6 +12,13 @@ async function updateUserPresence(userId: string) {
   db.updateUserLastSeen(userId, Date.now());
 }
 
+function sanitizeRoomName(name: string): string {
+  return name
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function userRoutes(app: Hono) {
   // Middleware para actualizar presencia
   app.use('/api/*', async (c, next) => {
@@ -233,6 +240,181 @@ export function userRoutes(app: Hono) {
     } catch (error) {
       console.error('[Messages] Error:', error);
       return c.json({ success: false, error: 'Failed to send message' }, 500);
+    }
+  });
+
+  // ================== SALAS TEMPORALES ==================
+
+  // Listar salas en las que participa el usuario
+  app.get('/api/rooms', async (c) => {
+    try {
+      const currentUserId = getUserId(c);
+      if (!currentUserId) {
+        return c.json({ success: false, error: 'Unauthorized: Missing X-User-Id header' }, 401);
+      }
+
+      const userRooms = db.getUserRooms(currentUserId);
+      const detailedRooms = userRooms.map((room: any) => db.getRoomById(room.id) || room);
+
+      return c.json({ success: true, data: detailedRooms });
+    } catch (error) {
+      console.error('[Rooms] Error listing rooms:', error);
+      return c.json({ success: false, error: 'Failed to list rooms' }, 500);
+    }
+  });
+
+  // Crear una sala temporal
+  app.post('/api/rooms', async (c) => {
+    try {
+      const currentUserId = getUserId(c);
+      if (!currentUserId) {
+        return c.json({ success: false, error: 'Unauthorized: Missing X-User-Id header' }, 401);
+      }
+
+      const { name, expiresInHours } = await c.req.json() as {
+        name?: string;
+        expiresInHours?: number;
+      };
+
+      if (!name || typeof name !== 'string') {
+        return c.json({ success: false, error: 'El nombre de la sala es obligatorio' }, 400);
+      }
+
+      const sanitizedName = sanitizeRoomName(name);
+      if (sanitizedName.length < 3 || sanitizedName.length > 50) {
+        return c.json({ success: false, error: 'El nombre debe tener entre 3 y 50 caracteres' }, 400);
+      }
+
+      let ttl = typeof expiresInHours === 'number' ? expiresInHours : 24;
+      ttl = Math.max(1, Math.min(72, ttl)); // entre 1h y 72h
+
+      const roomId = crypto.randomUUID();
+      db.createRoom(roomId, sanitizedName, currentUserId, ttl);
+      const room = db.getRoomById(roomId);
+
+      if (!room) {
+        return c.json({ success: false, error: 'No se pudo crear la sala' }, 500);
+      }
+
+      return c.json({ success: true, data: room });
+    } catch (error) {
+      console.error('[Rooms] Error creating room:', error);
+      return c.json({ success: false, error: 'Failed to create room' }, 500);
+    }
+  });
+
+  // Unirse a una sala mediante codigo
+  app.post('/api/rooms/join', async (c) => {
+    try {
+      const currentUserId = getUserId(c);
+      if (!currentUserId) {
+        return c.json({ success: false, error: 'Unauthorized: Missing X-User-Id header' }, 401);
+      }
+
+      const { code } = await c.req.json() as { code?: string };
+      const trimmedCode = code?.trim();
+
+      if (!trimmedCode) {
+        return c.json({ success: false, error: 'El codigo es obligatorio' }, 400);
+      }
+
+      const room = db.getRoomByCode(trimmedCode);
+      if (!room) {
+        return c.json({ success: false, error: 'La sala no existe o expiró' }, 404);
+      }
+
+      const alreadyParticipant = room.participants?.some((p: any) => p.userId === currentUserId);
+      if (!alreadyParticipant) {
+        const added = db.addParticipantToRoom(room.id, currentUserId);
+        if (!added) {
+          return c.json({ success: false, error: 'No se pudo unir a la sala' }, 500);
+        }
+      }
+
+      const updatedRoom = db.getRoomById(room.id);
+      if (!updatedRoom) {
+        return c.json({ success: false, error: 'Sala no encontrada' }, 404);
+      }
+      return c.json({ success: true, data: updatedRoom });
+    } catch (error) {
+      console.error('[Rooms] Error joining room:', error);
+      return c.json({ success: false, error: 'Failed to join room' }, 500);
+    }
+  });
+
+  // Obtener detalle de una sala (incluye mensajes)
+  app.get('/api/rooms/:roomId', async (c) => {
+    try {
+      const currentUserId = getUserId(c);
+      if (!currentUserId) {
+        return c.json({ success: false, error: 'Unauthorized: Missing X-User-Id header' }, 401);
+      }
+
+      const roomId = c.req.param('roomId');
+      const room = db.getRoomById(roomId);
+
+      if (!room) {
+        return c.json({ success: false, error: 'Sala no encontrada' }, 404);
+      }
+
+      const isParticipant = room.participants?.some((p: any) => p.userId === currentUserId);
+      if (!isParticipant) {
+        return c.json({ success: false, error: 'No participas en esta sala' }, 403);
+      }
+
+      const messages = db.getRoomMessages(roomId);
+      return c.json({ success: true, data: { room, messages } });
+    } catch (error) {
+      console.error('[Rooms] Error fetching room:', error);
+      return c.json({ success: false, error: 'Failed to fetch room' }, 500);
+    }
+  });
+
+  // Enviar mensaje de texto a una sala
+  app.post('/api/rooms/:roomId/messages', async (c) => {
+    try {
+      const currentUserId = getUserId(c);
+      if (!currentUserId) {
+        return c.json({ success: false, error: 'Unauthorized: Missing X-User-Id header' }, 401);
+      }
+
+      const roomId = c.req.param('roomId');
+      const room = db.getRoomById(roomId);
+
+      if (!room) {
+        return c.json({ success: false, error: 'Sala no encontrada' }, 404);
+      }
+
+      const isParticipant = room.participants?.some((p: any) => p.userId === currentUserId);
+      if (!isParticipant) {
+        return c.json({ success: false, error: 'No participas en esta sala' }, 403);
+      }
+
+      const { content } = await c.req.json() as { content?: string };
+      const sanitizedContent = (content ?? '')
+        .trim()
+        .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '')
+        .substring(0, 10000);
+
+      if (!sanitizedContent) {
+        return c.json({ success: false, error: 'El mensaje no puede estar vacio' }, 400);
+      }
+
+      const message = {
+        id: crypto.randomUUID(),
+        roomId,
+        senderId: currentUserId,
+        content: sanitizedContent,
+        timestamp: Date.now(),
+        type: 'text' as const
+      };
+
+      db.addMessageToRoom(roomId, message);
+
+      return c.json({ success: true, data: message });
+    } catch (error) {
+      console.error('[Rooms] Error sending room message:', error);
+      return c.json({ success: false, error: 'Failed to send room message' }, 500);
     }
   });
 }

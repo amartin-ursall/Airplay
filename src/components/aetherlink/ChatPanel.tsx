@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Upload, Bot, Send, Paperclip } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
-import type { Conversation, Message as MessageType } from "@shared/types";
+import type { Conversation, Message as MessageType, Room, RoomMessage } from "@shared/types";
 import { motion, AnimatePresence } from "framer-motion";
 import { usePolling } from "@/hooks/use-polling";
 const CHUNK_SIZE = 512 * 1024; // 512KB chunks - smaller for better reliability
@@ -34,7 +34,22 @@ interface ChatPanelProps {
   mobileNav?: React.ReactNode;
 }
 export function ChatPanel({ mobileNav }: ChatPanelProps) {
-  const { currentUser, activeConversationId, conversations, users, setConversation, addMessage, updateMessageProgress } = useAppStore(
+  const {
+    currentUser,
+    activeConversationId,
+    conversations,
+    users,
+    setConversation,
+    addMessage,
+    updateMessageProgress,
+    rooms,
+    roomMessages,
+    activeRoomId,
+    setRoom,
+    setRoomMessages,
+    addRoomMessage,
+    updateRoomMessageProgress,
+  } = useAppStore(
     useShallow((state) => ({
       currentUser: state.currentUser,
       activeConversationId: state.activeConversationId,
@@ -43,6 +58,13 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
       setConversation: state.setConversation,
       addMessage: state.addMessage,
       updateMessageProgress: state.updateMessageProgress,
+      rooms: state.rooms,
+      roomMessages: state.roomMessages,
+      activeRoomId: state.activeRoomId,
+      setRoom: state.setRoom,
+      setRoomMessages: state.setRoomMessages,
+      addRoomMessage: state.addRoomMessage,
+      updateRoomMessageProgress: state.updateRoomMessageProgress,
     }))
   );
   const [isLoading, setIsLoading] = useState(false);
@@ -59,6 +81,24 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
     ? [currentUser.id, activeConversationId].sort().join(':')
     : null;
   const conversation = conversationId ? conversations[conversationId] : null;
+  const activeRoom = activeRoomId ? rooms[activeRoomId] : null;
+  const roomThread = activeRoomId ? roomMessages[activeRoomId] : undefined;
+  const isRoomChat = Boolean(activeRoomId);
+  const currentMessages = isRoomChat
+    ? (roomThread ?? [])
+    : (conversation?.messages ?? []);
+  const messageCount = currentMessages.length;
+  const formatRoomExpiration = (expiresAt?: number) => {
+    if (!expiresAt) return '';
+    const diff = expiresAt - Date.now();
+    if (diff <= 0) return 'Expirada';
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours > 0) {
+      return `${hours}h ${minutes}m restantes`;
+    }
+    return `${minutes}m restantes`;
+  };
 
   const fetchConversation = useCallback(async () => {
     if (activeConversationId) {
@@ -71,30 +111,51 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
     }
   }, [activeConversationId, setConversation]);
 
-  useEffect(() => {
-    const loadConversation = async () => {
-      setIsLoading(true);
-      await fetchConversation();
-      setIsLoading(false);
-    };
-    loadConversation();
-  }, [activeConversationId, fetchConversation]);
+  const fetchRoomData = useCallback(async () => {
+    if (activeRoomId) {
+      try {
+        const data = await api<{ room: Room; messages: RoomMessage[] }>(`/api/rooms/${activeRoomId}`);
+        setRoom(data.room);
+        setRoomMessages(activeRoomId, data.messages);
+      } catch (error) {
+        console.error("Failed to fetch room:", error);
+      }
+    }
+  }, [activeRoomId, setRoom, setRoomMessages]);
 
-  // Poll conversation for new messages/files every 3 seconds
-  usePolling(fetchConversation, 3000);
+  useEffect(() => {
+    const loadData = async () => {
+      if (!activeConversationId && !activeRoomId) return;
+      setIsLoading(true);
+      try {
+        if (activeConversationId) {
+          await fetchConversation();
+        } else if (activeRoomId) {
+          await fetchRoomData();
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    loadData();
+  }, [activeConversationId, activeRoomId, fetchConversation, fetchRoomData]);
+
+  // Poll conversation/room for new messages
+  usePolling(fetchConversation, activeConversationId ? 3000 : null);
+  usePolling(fetchRoomData, activeRoomId ? 4000 : null);
   useEffect(() => {
     const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]');
     if (viewport) {
       viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' });
     }
-  }, [conversation?.messages, isLoading]);
+  }, [messageCount, isLoading]);
   // Helper function to upload a chunk with timeout and retries
   const uploadChunkWithRetry = async (
     fileId: string,
     chunkIndex: number,
     chunk: Blob,
     currentUserId: string,
-    recipientId: string,
+    targetHeader: { key: string; value: string },
     totalChunks: number,
     retryCount = 0
   ): Promise<Response> => {
@@ -108,7 +169,7 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
         headers: {
           'Content-Type': 'application/octet-stream',
           'X-User-Id': currentUserId,
-          'X-Recipient-Id': recipientId
+          [targetHeader.key]: targetHeader.value
         },
         body: chunk,
         signal: controller.signal,
@@ -140,12 +201,12 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
 
         if (isTimeout || isNetworkError) {
           const delaySeconds = 2 * Math.pow(2, retryCount); // 2s, 4s, 8s, 16s, 32s
-          console.warn(`⚠ Chunk ${chunkIndex + 1}/${totalChunks} failed (${errorName}), retry ${retryCount + 1}/${MAX_RETRIES} in ${delaySeconds}s...`);
+          console.warn(`[Upload] Chunk ${chunkIndex + 1}/${totalChunks} failed (${errorName}), retry ${retryCount + 1}/${MAX_RETRIES} in ${delaySeconds}s...`);
 
           // Wait before retrying with exponential backoff
           await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
-          return uploadChunkWithRetry(fileId, chunkIndex, chunk, currentUserId, recipientId, totalChunks, retryCount + 1);
-        }
+          return uploadChunkWithRetry(fileId, chunkIndex, chunk, currentUserId, targetHeader, totalChunks, retryCount + 1);
+      }
       }
 
       console.error(`✗ Chunk ${chunkIndex + 1}/${totalChunks} failed permanently: ${errorMsg}`);
@@ -154,55 +215,87 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
   };
 
   const handleSendFile = async (file: File) => {
-    if (!currentUser || !activeConversationId) return;
+    if (!currentUser) return;
+    const roomIdForUpload = activeRoomId;
+    const targetId = roomIdForUpload ?? activeConversationId;
+    if (!targetId) return;
+
     if (file.size > MAX_FILE_SIZE) {
-      toast.error(`File is too large. Maximum size is 350MB.`);
+      toast.error('File is too large. Maximum size is 350MB.');
       return;
     }
 
     const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+    const isRoomTarget = Boolean(roomIdForUpload);
+    const tempMessageId = generateUUID();
+    const fileMeta = { name: file.name, size: file.size, type: file.type };
+
     toast.info(`Uploading ${file.name} (${fileSizeMB} MB)...`);
 
-    // Generate the correct conversation ID (sorted user IDs joined with ':')
-    const convId = [currentUser.id, activeConversationId].sort().join(':');
+    const conversationKey = !isRoomTarget && activeConversationId && currentUser
+      ? [currentUser.id, activeConversationId].sort().join(':')
+      : null;
 
-    const tempMessageId = generateUUID();
-    const placeholderMessage: MessageType = {
-      id: tempMessageId,
-      conversationId: convId,
-      senderId: currentUser.id,
-      content: '', // Will be file ID
-      timestamp: Date.now(),
-      type: 'file',
-      file: { name: file.name, size: file.size, type: file.type },
-      progress: 0,
-    };
-    addMessage(placeholderMessage);
+    if (isRoomTarget && roomIdForUpload) {
+      const placeholder: RoomMessage = {
+        id: tempMessageId,
+        roomId: roomIdForUpload,
+        senderId: currentUser.id,
+        content: '',
+        timestamp: Date.now(),
+        type: 'file',
+        file: fileMeta,
+        progress: 0,
+      };
+      addRoomMessage(roomIdForUpload, placeholder);
+    } else if (conversationKey) {
+      const placeholderMessage: MessageType = {
+        id: tempMessageId,
+        conversationId: conversationKey,
+        senderId: currentUser.id,
+        content: '',
+        timestamp: Date.now(),
+        type: 'file',
+        file: fileMeta,
+        progress: 0,
+      };
+      addMessage(placeholderMessage);
+    }
 
     try {
+      const payload = isRoomTarget
+        ? { roomId: targetId, file: fileMeta }
+        : { recipientId: targetId, file: fileMeta };
+
       const { fileId } = await api<{ fileId: string }>('/api/files/initiate', {
         method: 'POST',
-        body: JSON.stringify({
-          recipientId: activeConversationId,
-          file: { name: file.name, size: file.size, type: file.type },
-        }),
+        body: JSON.stringify(payload),
       });
 
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-      const estimatedTime = Math.ceil((totalChunks * 1.5) / 60); // Faster estimate with parallel uploads
+      const estimatedTime = Math.ceil((totalChunks * 1.5) / 60);
       const startTime = Date.now();
-      console.log(`📤 Starting upload: ${totalChunks} chunks of ${CHUNK_SIZE / 1024}KB each (${CONCURRENT_UPLOADS} parallel, ~${estimatedTime} min)`);
-
-      // Track completed chunks for progress
       let completedChunks = 0;
 
-      // Function to process chunks with concurrency limit
+      console.log(`[Upload] Starting: ${totalChunks} chunks (${CONCURRENT_UPLOADS} parallel, ~${estimatedTime} min)`);
+
+      const targetHeader = isRoomTarget
+        ? { key: 'X-Room-Id', value: targetId }
+        : { key: 'X-Recipient-Id', value: targetId };
+
+      const updateProgress = (progress: number) => {
+        if (isRoomTarget && roomIdForUpload) {
+          updateRoomMessageProgress(roomIdForUpload, tempMessageId, progress);
+        } else if (conversationKey) {
+          updateMessageProgress(conversationKey, tempMessageId, progress);
+        }
+      };
+
       const uploadChunksInParallel = async () => {
         const queue: number[] = Array.from({ length: totalChunks }, (_, i) => i);
         const activeUploads: Set<Promise<void>> = new Set();
 
         while (queue.length > 0 || activeUploads.size > 0) {
-          // Start new uploads up to the concurrency limit
           while (activeUploads.size < CONCURRENT_UPLOADS && queue.length > 0) {
             const chunkIndex = queue.shift()!;
             const start = chunkIndex * CHUNK_SIZE;
@@ -210,22 +303,16 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
             const chunk = file.slice(start, end);
 
             const uploadPromise = (async () => {
-              try {
-                await uploadChunkWithRetry(fileId, chunkIndex, chunk, currentUser.id, activeConversationId, totalChunks);
+              await uploadChunkWithRetry(fileId, chunkIndex, chunk, currentUser.id, targetHeader, totalChunks);
 
-                completedChunks++;
-                const progress = Math.round((completedChunks / totalChunks) * 100);
-                updateMessageProgress(convId, tempMessageId, progress);
+              completedChunks++;
+              const progress = Math.round((completedChunks / totalChunks) * 100);
+              updateProgress(progress);
 
-                // Log progress every 10 chunks
-                if (completedChunks % 10 === 0 || completedChunks === totalChunks) {
-                  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-                  const speed = (completedChunks * CHUNK_SIZE / 1024 / 1024 / (Date.now() - startTime) * 1000).toFixed(2);
-                  console.log(`📊 Progress: ${progress}% (${completedChunks}/${totalChunks} chunks, ${elapsed}s, ${speed} MB/s)`);
-                }
-              } catch (error) {
-                // Re-throw to be caught by outer try-catch
-                throw error;
+              if (completedChunks % 10 === 0 || completedChunks === totalChunks) {
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                const speed = (completedChunks * CHUNK_SIZE / 1024 / 1024 / (Date.now() - startTime) * 1000).toFixed(2);
+                console.log(`[Upload] Progress: ${progress}% (${completedChunks}/${totalChunks} chunks, ${elapsed}s, ${speed} MB/s)`);
               }
             })();
 
@@ -233,7 +320,6 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
             uploadPromise.finally(() => activeUploads.delete(uploadPromise));
           }
 
-          // Wait for at least one upload to complete before adding more
           if (activeUploads.size > 0) {
             await Promise.race(activeUploads);
           }
@@ -242,31 +328,60 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
 
       await uploadChunksInParallel();
 
-      // Calculate final stats
       const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
       const avgSpeed = (file.size / 1024 / 1024 / (Date.now() - startTime) * 1000).toFixed(2);
 
-      // Success notification
       toast.success(`${file.name} uploaded successfully!`, {
         description: `${fileSizeMB} MB uploaded in ${totalTime}s (${avgSpeed} MB/s)`,
         duration: 4000,
       });
 
-      // Mark as complete
-      updateMessageProgress(convId, tempMessageId, 100);
-
+      updateProgress(100);
     } catch (error) {
-      console.error("File upload failed:", error);
+      console.error('File upload failed:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      toast.error("File upload failed", {
+      toast.error('File upload failed', {
         description: `Error: ${errorMessage}. Please try again.`,
         duration: 5000,
       });
-      updateMessageProgress(convId, tempMessageId, -1); // Indicate error
+      if (isRoomTarget && roomIdForUpload) {
+        updateRoomMessageProgress(roomIdForUpload, tempMessageId, -1);
+      } else if (conversationKey) {
+        updateMessageProgress(conversationKey, tempMessageId, -1);
+      }
     }
   };
+
   const handleSendText = async () => {
-    if (!currentUser || !activeConversationId || !textMessage.trim()) return;
+    if (!currentUser || !textMessage.trim()) return;
+    const trimmed = textMessage.trim();
+
+    if (activeRoomId) {
+      const message: RoomMessage = {
+        id: generateUUID(),
+        roomId: activeRoomId,
+        senderId: currentUser.id,
+        content: trimmed,
+        timestamp: Date.now(),
+        type: 'text',
+      };
+
+      addRoomMessage(activeRoomId, message);
+      setTextMessage('');
+
+      try {
+        await api(`/api/rooms/${activeRoomId}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: trimmed }),
+        });
+      } catch (error) {
+        console.error('Failed to send room message:', error);
+        toast.error('No se pudo enviar el mensaje');
+      }
+      return;
+    }
+
+    if (!activeConversationId) return;
 
     const convId = [currentUser.id, activeConversationId].sort().join(':');
     const messageId = generateUUID();
@@ -275,22 +390,20 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
       id: messageId,
       conversationId: convId,
       senderId: currentUser.id,
-      content: textMessage.trim(),
+      content: trimmed,
       timestamp: Date.now(),
       type: 'text',
     };
 
-    // Add message locally
     addMessage(newMessage);
     setTextMessage('');
 
-    // Send to server
     try {
       await api('/api/messages', {
         method: 'POST',
         body: JSON.stringify({
           recipientId: activeConversationId,
-          content: textMessage.trim(),
+          content: trimmed,
         }),
       });
     } catch (error) {
@@ -393,16 +506,37 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
   }, [uploadQueue, isUploading]);
   const usersById = new Map(users.map(u => [u.id, u]));
   if (currentUser) usersById.set(currentUser.id, currentUser);
-  if (!activeConversationId || !recipient) {
+
+  if (!activeConversationId && !activeRoomId) {
     return (
       <div className="flex flex-col h-full items-center justify-center bg-slate-50 dark:bg-slate-900/50 text-center p-8">
         {mobileNav && <div className="absolute top-4 left-4">{mobileNav}</div>}
         <Bot size={64} className="text-slate-400 dark:text-slate-600 mb-4" />
         <h2 className="text-2xl font-semibold text-foreground">Bienvenido a Airplay</h2>
-        <p className="text-muted-foreground mt-2 max-w-sm">Selecciona un Usuario para iniciar una conversación.</p>
+        <p className="text-muted-foreground mt-2 max-w-sm">Selecciona un usuario o entra a una sala temporal para comenzar.</p>
       </div>
     );
   }
+
+  if (!isRoomChat && (!activeConversationId || !recipient)) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center bg-slate-50 dark:bg-slate-900/50 text-center p-8">
+        {mobileNav && <div className="absolute top-4 left-4">{mobileNav}</div>}
+        <Bot size={64} className="text-slate-400 dark:text-slate-600 mb-4" />
+        <h2 className="text-2xl font-semibold text-foreground">Sin conversaci�n</h2>
+        <p className="text-muted-foreground mt-2 max-w-sm">Elige un destinatario disponible para comenzar.</p>
+      </div>
+    );
+  }
+
+  if (isRoomChat && !activeRoom) {
+    return (
+      <div className="flex items-center justify-center h-full bg-slate-50 dark:bg-slate-900/50">
+        <Skeleton className="w-1/2 h-32" />
+      </div>
+    );
+  }
+
   return (
     <div
       className="flex flex-col h-full relative"
@@ -424,11 +558,29 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
 
       <header className="flex items-center gap-4 p-4 border-b border-slate-200 dark:border-slate-800 bg-background">
         {mobileNav}
-        <UserAvatar user={recipient} isOnline={recipient.online} />
-        <div>
-          <h2 className="text-lg font-semibold">{recipient.name}</h2>
-          <p className="text-sm text-muted-foreground">{recipient.online ? 'Online' : 'Offline'}</p>
-        </div>
+        {isRoomChat && activeRoom ? (
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-full bg-indigo-600 text-white font-semibold flex items-center justify-center shadow">
+              #{activeRoom.code}
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold">{activeRoom.name}</h2>
+              <p className="text-sm text-muted-foreground">
+                {activeRoom.participants?.length || 1} participantes • {formatRoomExpiration(activeRoom.expiresAt)}
+              </p>
+            </div>
+          </div>
+        ) : (
+          recipient && (
+            <>
+              <UserAvatar user={recipient} isOnline={recipient.online} />
+              <div>
+                <h2 className="text-lg font-semibold">{recipient.name}</h2>
+                <p className="text-sm text-muted-foreground">{recipient.online ? 'Online' : 'Offline'}</p>
+              </div>
+            </>
+          )
+        )}
       </header>
       <ScrollArea className="flex-1 bg-slate-50 dark:bg-slate-900/50" ref={scrollAreaRef}>
         <div className="p-4 md:p-6">
@@ -440,8 +592,8 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
             </div>
           ) : (
             <AnimatePresence>
-              {conversation?.messages && conversation.messages.length > 0 ? (
-                conversation.messages.map((msg) => (
+              {currentMessages.length > 0 ? (
+                currentMessages.map((msg) => (
                   <motion.div
                     key={msg.id}
                     layout
@@ -450,12 +602,24 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
                     exit={{ opacity: 0, scale: 0.8, y: 50 }}
                     transition={{ type: "spring", stiffness: 300, damping: 30 }}
                   >
-                    <Message message={msg} sender={usersById.get(msg.senderId)} />
+                    <Message
+                      message={msg}
+                      sender={usersById.get(msg.senderId)}
+                      context={
+                        isRoomChat && activeRoomId
+                          ? { type: 'room', roomId: activeRoomId }
+                          : { type: 'direct', otherUserId: activeConversationId! }
+                      }
+                    />
                   </motion.div>
                 ))
               ) : (
                 <div className="text-center text-muted-foreground py-8">
-                  <p>No messages yet. Upload a file to start the conversation.</p>
+                  <p>
+                    {isRoomChat
+                      ? 'Aún no hay archivos en esta sala. Comparte el código para invitar a alguien.'
+                      : 'No hay mensajes todavía. Sube un archivo para iniciar la conversación.'}
+                  </p>
                 </div>
               )}
             </AnimatePresence>

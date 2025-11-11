@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useAppStore } from '@/store/app-store';
 import { useShallow } from 'zustand/react/shallow';
 import { api } from '@/lib/api-client';
-import type { User } from '@shared/types';
+import type { User, Room } from '@shared/types';
 import { UserList } from '@/components/aetherlink/UserList';
 import { ChatPanel } from '@/components/aetherlink/ChatPanel';
 import { usePolling } from '@/hooks/use-polling';
@@ -101,11 +101,12 @@ function SetNameModal({ onNameSet }: { onNameSet: (user: User) => void }) {
   );
 }
 export function HomePage() {
-  const { currentUser, setCurrentUser, setUsers } = useAppStore(
+  const { currentUser, setCurrentUser, setUsers, setRooms } = useAppStore(
     useShallow((state) => ({
       currentUser: state.currentUser,
       setCurrentUser: state.setCurrentUser,
       setUsers: state.setUsers,
+      setRooms: state.setRooms,
     }))
   );
   const isMobile = useIsMobile();
@@ -130,10 +131,22 @@ export function HomePage() {
       console.error("Failed to fetch users:", error);
     }
   }, [currentUser, setUsers]);
+
+  const fetchRooms = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const roomList = await api<Room[]>('/api/rooms');
+      setRooms(roomList);
+    } catch (error) {
+      console.error("Failed to fetch rooms:", error);
+    }
+  }, [currentUser, setRooms]);
   useEffect(() => {
     fetchUsers();
-  }, [currentUser, fetchUsers]);
-  usePolling(fetchUsers, 5000);
+    fetchRooms();
+  }, [currentUser, fetchUsers, fetchRooms]);
+  usePolling(fetchUsers, currentUser ? 5000 : null);
+  usePolling(fetchRooms, currentUser ? 10000 : null);
   if (!currentUser) {
     return (
       <>

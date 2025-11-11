@@ -12,8 +12,22 @@ function getUserId(c: any): string | undefined {
   return c.req.header('X-User-Id');
 }
 
+function ensureRoomAccess(userId: string, roomId: string) {
+  const room = db.getRoomById(roomId);
+  if (!room) {
+    return { error: { status: 404, message: 'Sala no encontrada o expirada' } } as const;
+  }
+
+  const isParticipant = room.participants?.some((p: any) => p.userId === userId);
+  if (!isParticipant) {
+    return { error: { status: 403, message: 'No participas en esta sala' } } as const;
+  }
+
+  return { room } as const;
+}
+
 export function fileRoutes(app: Hono) {
-  // Iniciar subida de archivo
+  // Iniciar subida de archivo (directo o sala)
   app.post('/api/files/initiate', async (c) => {
     try {
       const currentUserId = getUserId(c);
@@ -22,22 +36,35 @@ export function fileRoutes(app: Hono) {
         return c.json({ success: false, error: 'Unauthorized: Missing X-User-Id header' }, 401);
       }
 
-      const { recipientId, file } = await c.req.json() as {
-        recipientId: string;
+      const { recipientId, roomId, file } = await c.req.json() as {
+        recipientId?: string;
+        roomId?: string;
         file: FileMetadata;
       };
 
-      if (!recipientId || !file) {
-        return c.json({ success: false, error: 'recipientId and file metadata required' }, 400);
+      if (!file) {
+        return c.json({ success: false, error: 'file metadata required' }, 400);
       }
 
-      // Validar y sanitizar el nombre de archivo
+      const hasRecipient = Boolean(recipientId);
+      const hasRoom = Boolean(roomId);
+
+      if ((hasRecipient && hasRoom) || (!hasRecipient && !hasRoom)) {
+        return c.json({ success: false, error: 'Provide either recipientId or roomId' }, 400);
+      }
+
+      if (hasRoom) {
+        const result = ensureRoomAccess(currentUserId, roomId!);
+        if ('error' in result) {
+          return c.json({ success: false, error: result.error.message }, result.error.status);
+        }
+      }
+
       if (!file.name || !isFilenameSafe(file.name)) {
         console.warn(`[Backend] Unsafe filename detected: ${file.name}`);
         return c.json({ success: false, error: 'Invalid filename' }, 400);
       }
 
-      // Sanitizar el nombre de archivo en los metadatos
       const sanitizedFile = {
         ...file,
         name: sanitizeFilename(file.name)
@@ -56,7 +83,7 @@ export function fileRoutes(app: Hono) {
     }
   });
 
-  // Subir un chunk de archivo
+  // Subir chunks (directo o sala)
   app.post('/api/files/upload/:fileId/:chunkIndex', async (c) => {
     const startTime = Date.now();
     try {
@@ -68,18 +95,30 @@ export function fileRoutes(app: Hono) {
 
       const { fileId, chunkIndex } = c.req.param();
       const recipientId = c.req.header('X-Recipient-Id');
+      const roomId = c.req.header('X-Room-Id');
 
-      if (!recipientId) {
-        return c.json({ success: false, error: 'X-Recipient-Id header required' }, 400);
+      const hasRecipient = Boolean(recipientId);
+      const hasRoom = Boolean(roomId);
+
+      if ((hasRecipient && hasRoom) || (!hasRecipient && !hasRoom)) {
+        return c.json({ success: false, error: 'Provide either X-Recipient-Id or X-Room-Id header' }, 400);
+      }
+
+      let roomContext: { id: string; code: string } | null = null;
+      if (hasRoom) {
+        const result = ensureRoomAccess(currentUserId, roomId!);
+        if ('error' in result) {
+          return c.json({ success: false, error: result.error.message }, result.error.status);
+        }
+        roomContext = { id: result.room.id, code: result.room.code };
       }
 
       const index = parseInt(chunkIndex, 10);
 
-      // Add timeout protection for reading request body
       const chunkData = await Promise.race([
         c.req.arrayBuffer(),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Request body read timeout')), 100000) // 100s timeout
+          setTimeout(() => reject(new Error('Request body read timeout')), 100000)
         )
       ]);
 
@@ -89,16 +128,13 @@ export function fileRoutes(app: Hono) {
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(2);
       if (index % 10 === 0) {
-        console.log(`[Backend] ✓ Chunk ${index + 1}/${totalChunks} (${progress}%) - ${chunkData.byteLength} bytes in ${duration}s`);
+        console.log(`[Backend] 🔁 Chunk ${index + 1}/${totalChunks} (${progress}%) - ${chunkData.byteLength} bytes in ${duration}s`);
       }
 
       const isComplete = db.addFileChunk(fileId, index, chunkData);
 
       if (isComplete) {
-        console.log(`[Backend] ✓ File upload 100% complete for fileId: ${fileId}`);
-      }
-
-      if (isComplete) {
+        console.log(`[Backend] ✅ File upload 100% complete for fileId: ${fileId}`);
         const fileMeta = db.getFileMetadata(fileId);
         const completeFile = db.getCompleteFile(fileId);
 
@@ -106,13 +142,17 @@ export function fileRoutes(app: Hono) {
           const fileSizeMB = (fileMeta.size / (1024 * 1024)).toFixed(2);
           console.log(`[Backend] Processing complete file: ${fileMeta.name} (${fileSizeMB} MB)`);
 
-          // Obtener nombres de usuarios
           const sender = db.getUser(currentUserId);
-          const recipient = db.getUser(recipientId);
+          if (!sender) {
+            return c.json({ success: false, error: 'Sender not found' }, 404);
+          }
 
-          if (sender && recipient) {
-            // Guardar archivo en sistema de archivos
-            console.log(`[Backend] Saving file to disk...`);
+          if (hasRecipient) {
+            const recipient = db.getUser(recipientId!);
+            if (!recipient) {
+              return c.json({ success: false, error: 'Recipient not found' }, 404);
+            }
+
             const savedFileName = await FileStorageService.saveFile(
               sender.name,
               recipient.name,
@@ -122,16 +162,12 @@ export function fileRoutes(app: Hono) {
               fileMeta
             );
 
-            console.log(`[Backend] ✓ File saved to FTP: ${savedFileName}`);
-
-            // Crear mensaje en la conversación
-            const conversationId = InMemoryDB.getConversationId(currentUserId, recipientId);
-
+            const conversationId = InMemoryDB.getConversationId(currentUserId, recipientId!);
             let conversation = db.getConversation(conversationId);
             if (!conversation) {
               conversation = {
                 id: conversationId,
-                participants: [currentUserId, recipientId],
+                participants: [currentUserId, recipientId!],
                 messages: []
               };
               db.createConversation(conversation);
@@ -141,7 +177,7 @@ export function fileRoutes(app: Hono) {
               id: crypto.randomUUID(),
               conversationId,
               senderId: currentUserId,
-              content: savedFileName, // Guardar el nombre del archivo guardado
+              content: savedFileName,
               timestamp: Date.now(),
               type: 'file' as const,
               file: fileMeta
@@ -149,13 +185,11 @@ export function fileRoutes(app: Hono) {
 
             db.addMessageToConversation(conversationId, message);
 
-            // Notificar a través de WebSocket
             const wsService = getWebSocketService();
             if (wsService) {
               wsService.notifyNewMessage(message, currentUserId);
             }
 
-            // Persistir mensaje en archivo .txt
             await MessageStorageService.saveMessage(
               sender.name,
               recipient.name,
@@ -163,9 +197,30 @@ export function fileRoutes(app: Hono) {
               sender.name
             );
 
-            console.log('[Backend] Message added to conversation:', message);
+            console.log('[Backend] Message added to conversation:', message.id);
+            db.deleteFileUpload(fileId);
+          } else if (roomContext) {
+            const savedFileName = await FileStorageService.saveRoomFile(
+              roomContext.id,
+              roomContext.code,
+              sender.name,
+              completeFile,
+              fileMeta
+            );
 
-            // Limpiar datos temporales
+            const message = {
+              id: crypto.randomUUID(),
+              roomId: roomContext.id,
+              senderId: currentUserId,
+              content: savedFileName,
+              timestamp: Date.now(),
+              type: 'file' as const,
+              file: fileMeta
+            };
+
+            db.addMessageToRoom(roomContext.id, message);
+            console.log('[Backend] File added to temp room:', message.id);
+            // Future: notify via WebSocket when clients soportan salas
             db.deleteFileUpload(fileId);
           }
         }
@@ -178,7 +233,7 @@ export function fileRoutes(app: Hono) {
     }
   });
 
-  // Descargar archivo
+  // Descargar archivo (directo o sala)
   app.get('/api/files/:fileId', async (c) => {
     try {
       const currentUserId = getUserId(c);
@@ -189,60 +244,68 @@ export function fileRoutes(app: Hono) {
 
       const { fileId } = c.req.param();
       const otherUserId = c.req.query('otherUserId');
+      const roomId = c.req.query('roomId');
 
-      if (!otherUserId) {
-        return c.json({ success: false, error: 'otherUserId query parameter required' }, 400);
+      const hasRecipient = Boolean(otherUserId);
+      const hasRoom = Boolean(roomId);
+
+      if ((hasRecipient && hasRoom) || (!hasRecipient && !hasRoom)) {
+        return c.json({ success: false, error: 'Provide either otherUserId or roomId' }, 400);
       }
 
-      console.log(`[Backend] Download request for fileId: ${fileId} by user: ${currentUserId}`);
-
-      // Obtener nombres de usuarios
-      const currentUser = db.getUser(currentUserId);
-      const otherUser = db.getUser(otherUserId);
-
-      if (!currentUser || !otherUser) {
-        return c.json({ success: false, error: 'Users not found' }, 404);
-      }
-
-      // Validar el nombre de archivo antes de intentar leerlo
       if (!isFilenameSafe(fileId)) {
         console.warn(`[Backend] Unsafe filename in download request: ${fileId}`);
         return c.json({ success: false, error: 'Invalid filename' }, 400);
       }
 
-      // El fileId es el nombre del archivo guardado
-      const fileData = await FileStorageService.getFile(
-        currentUser.name,
-        otherUser.name,
-        fileId
-      );
+      let fileData: Buffer | null = null;
+
+      if (hasRecipient) {
+        console.log(`[Backend] Download request for fileId: ${fileId} by user: ${currentUserId}`);
+
+        const currentUser = db.getUser(currentUserId);
+        const otherUser = db.getUser(otherUserId!);
+
+        if (!currentUser || !otherUser) {
+          return c.json({ success: false, error: 'Users not found' }, 404);
+        }
+
+        fileData = await FileStorageService.getFile(
+          currentUser.name,
+          otherUser.name,
+          fileId
+        );
+      } else if (roomId) {
+        const result = ensureRoomAccess(currentUserId, roomId);
+        if ('error' in result) {
+          return c.json({ success: false, error: result.error.message }, result.error.status);
+        }
+        fileData = await FileStorageService.getRoomFile(roomId, fileId);
+      }
 
       if (!fileData) {
         console.error(`[Backend] File not found: ${fileId}`);
         return c.notFound();
       }
 
-      // Obtener el tipo de archivo de la extensión
       const ext = fileId.split('.').pop()?.toLowerCase() || '';
       const mimeTypes: Record<string, string> = {
-        'pdf': 'application/pdf',
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'png': 'image/png',
-        'gif': 'image/gif',
-        'txt': 'text/plain',
-        'doc': 'application/msword',
-        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'xls': 'application/vnd.ms-excel',
-        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'zip': 'application/zip',
-        'mp4': 'video/mp4',
-        'mp3': 'audio/mpeg'
+        pdf: 'application/pdf',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        gif: 'image/gif',
+        txt: 'text/plain',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        xls: 'application/vnd.ms-excel',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        zip: 'application/zip',
+        mp4: 'video/mp4',
+        mp3: 'audio/mpeg'
       };
 
       const contentType = mimeTypes[ext] || 'application/octet-stream';
-
-      console.log(`[Backend] Sending file: ${fileId}, type: ${contentType}, size: ${fileData.length}`);
 
       c.header('Content-Type', contentType);
       c.header('Content-Disposition', `attachment; filename="${fileId}"`);
@@ -255,7 +318,7 @@ export function fileRoutes(app: Hono) {
     }
   });
 
-  // Listar archivos de una conversación
+  // Listar archivos de una conversacion directa
   app.get('/api/files/list/:userId', async (c) => {
     try {
       const currentUserId = getUserId(c);

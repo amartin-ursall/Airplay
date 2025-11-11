@@ -30,6 +30,32 @@ export interface Conversation {
   messages: Message[];
 }
 
+export interface RoomParticipant {
+  userId: string;
+  joinedAt: number;
+}
+
+export interface Room {
+  id: string;
+  code: string;
+  name: string;
+  createdBy: string;
+  createdAt: number;
+  expiresAt: number;
+  participants: RoomParticipant[];
+}
+
+export interface RoomMessage {
+  id: string;
+  roomId: string;
+  senderId: string;
+  content: string;
+  timestamp: number;
+  type: 'file' | 'text';
+  file?: FileMetadata;
+  progress?: number;
+}
+
 export interface ClientErrorReport {
   message: string;
   url: string;

@@ -1,14 +1,15 @@
 import { useAppStore } from "@/store/app-store";
 import { cn } from "@/lib/utils";
 import { UserAvatar } from "./UserAvatar";
-import type { Message as MessageType, User } from "@shared/types";
+import type { Message as MessageType, RoomMessage, User } from "@shared/types";
 import { format } from "date-fns";
 import { FileText, Download, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Progress } from "../ui/progress";
 interface MessageProps {
-  message: MessageType;
-  sender: User | undefined;
+  message: MessageType | RoomMessage;
+  sender?: User;
+  context: { type: 'direct'; otherUserId: string } | { type: 'room'; roomId: string };
 }
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 Bytes';
@@ -17,21 +18,19 @@ function formatFileSize(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
-export function Message({ message, sender }: MessageProps) {
+export function Message({ message, sender, context }: MessageProps) {
   const currentUser = useAppStore((state) => state.currentUser);
-  const activeConversationId = useAppStore((state) => state.activeConversationId);
   const isSender = message.senderId === currentUser?.id;
-
-  if (!sender) return null;
+  const displaySender = sender ?? { name: 'Participante' };
 
   const handleDownload = async () => {
-    if (!currentUser || !activeConversationId) return;
+    if (!currentUser || (context.type === 'direct' && !context.otherUserId)) return;
 
     try {
-      // The content of a file message is the file ID
-      const downloadUrl = `/api/files/${message.content}?otherUserId=${activeConversationId}`;
+      const downloadUrl = context.type === 'room'
+        ? `/api/files/${message.content}?roomId=${context.roomId}`
+        : `/api/files/${message.content}?otherUserId=${context.otherUserId}`;
 
-      // Fetch the file as a blob
       const response = await fetch(downloadUrl, {
         method: 'GET',
         headers: {
@@ -69,7 +68,7 @@ export function Message({ message, sender }: MessageProps) {
   if (message.type === 'text') {
     return (
       <div className={cn("flex items-start gap-3 my-4", isSender ? "flex-row-reverse" : "flex-row")}>
-        <UserAvatar user={sender} />
+        <UserAvatar user={displaySender} />
         <div className={cn("flex flex-col max-w-xs md:max-w-md", isSender ? "items-end" : "items-start")}>
           <div
             className={cn(
@@ -97,7 +96,7 @@ export function Message({ message, sender }: MessageProps) {
 
     return (
       <div className={cn("flex items-start gap-3 my-4", isSender ? "flex-row-reverse" : "flex-row")}>
-        <UserAvatar user={sender} />
+        <UserAvatar user={displaySender} />
         <div className={cn("flex flex-col max-w-xs md:max-w-md", isSender ? "items-end" : "items-start")}>
           <div
             className={cn(
