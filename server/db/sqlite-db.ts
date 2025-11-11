@@ -693,6 +693,19 @@ export class SQLiteDatabase {
   }
 
   /**
+   * Actualiza el avatar de una sala
+   */
+  updateRoomAvatar(roomId: string, avatarUrl: string | null): void {
+    const stmt = this.db.prepare(`
+      UPDATE rooms
+      SET avatar_url = ?
+      WHERE id = ?
+    `);
+    stmt.run(avatarUrl, roomId);
+    console.log(`[SQLite] Avatar actualizado para la sala ${roomId}`);
+  }
+
+  /**
    * Agrega un mensaje a una sala
    */
   addMessageToRoom(roomId: string, message: any): void {

@@ -1,11 +1,11 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useAppStore } from "@/store/app-store";
 import { api } from "@/lib/api-client";
 import { useShallow } from 'zustand/react/shallow';
 import { UserAvatar } from "./UserAvatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { LogOut, Copy, Check } from "lucide-react";
+import { LogOut, Copy, Check, Camera, Loader2 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
@@ -46,6 +46,11 @@ export function UserList({ onUserSelect }: UserListProps) {
   const [joinCode, setJoinCode] = useState('');
   const [isCreatingRoom, setCreatingRoom] = useState(false);
   const [isJoiningRoom, setJoiningRoom] = useState(false);
+  const [copiedRoomId, setCopiedRoomId] = useState<string | null>(null);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pendingRoomAvatarId, setPendingRoomAvatarId] = useState<string | null>(null);
+  const [avatarUploadingRoomId, setAvatarUploadingRoomId] = useState<string | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const otherUsers = users.filter(u => u.id !== currentUser?.id && u.online);
   const handleSelectUser = (userId: string) => {
     setActiveConversationId(userId);
@@ -59,6 +64,75 @@ export function UserList({ onUserSelect }: UserListProps) {
   const sortedRooms = useMemo(() => {
     return Object.values(rooms).sort((a, b) => b.createdAt - a.createdAt);
   }, [rooms]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const resetAvatarFlow = (input?: HTMLInputElement | null) => {
+    if (input) {
+      input.value = '';
+    }
+    setPendingRoomAvatarId(null);
+    setAvatarUploadingRoomId(null);
+  };
+
+  const handleAvatarFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !pendingRoomAvatarId || !currentUser) {
+      resetAvatarFlow(event.target);
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      toast.error('Selecciona una imagen válida (PNG, JPG o WEBP)');
+      resetAvatarFlow(event.target);
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error('La imagen debe pesar menos de 2MB');
+      resetAvatarFlow(event.target);
+      return;
+    }
+
+    setAvatarUploadingRoomId(pendingRoomAvatarId);
+    try {
+      const formData = new FormData();
+      formData.append('avatar', file);
+
+      const response = await fetch(`/api/rooms/${pendingRoomAvatarId}/avatar`, {
+        method: 'PUT',
+        headers: {
+          'X-User-Id': currentUser.id
+        },
+        body: formData
+      });
+
+      const json = await response.json();
+      if (!response.ok || !json.success) {
+        throw new Error(json?.error || 'No se pudo actualizar la foto');
+      }
+
+      setRoom(json.data);
+      toast.success('Foto de la sala actualizada');
+    } catch (error: any) {
+      console.error('Failed to update room avatar:', error);
+      toast.error(error?.message || 'No se pudo actualizar la foto');
+    } finally {
+      resetAvatarFlow(event.target);
+    }
+  };
+
+  const triggerAvatarPicker = (roomId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPendingRoomAvatarId(roomId);
+    avatarInputRef.current?.click();
+  };
 
   const formatTimeLeft = (room: Room) => {
     if (room.isPermanent) return 'Permanente';
@@ -228,15 +302,25 @@ export function UserList({ onUserSelect }: UserListProps) {
               <p className="text-xs text-muted-foreground">Crea una sala o introduce un código para unirte.</p>
             )}
             {sortedRooms.map((room) => {
-              const [copied, setCopied] = useState(false);
-
               const handleCopyCode = (e: React.MouseEvent) => {
                 e.stopPropagation();
                 navigator.clipboard.writeText(room.code);
-                setCopied(true);
-                toast.success('Código copiado');
-                setTimeout(() => setCopied(false), 2000);
+                setCopiedRoomId(room.id);
+                toast.success('C�digo copiado');
+                if (copyTimeoutRef.current) {
+                  clearTimeout(copyTimeoutRef.current);
+                }
+                copyTimeoutRef.current = setTimeout(() => setCopiedRoomId(null), 2000);
               };
+
+              const initials = room.name
+                .split(' ')
+                .map((n) => n[0])
+                .join('')
+                .substring(0, 2)
+                .toUpperCase();
+
+              const isUploadingAvatar = avatarUploadingRoomId === room.id;
 
               return (
                 <div
@@ -248,42 +332,91 @@ export function UserList({ onUserSelect }: UserListProps) {
                       : "border-slate-200 dark:border-slate-700"
                   )}
                 >
-                  <button
+                  <div
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleSelectRoom(room.id)}
-                    className="w-full text-left"
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        handleSelectRoom(room.id);
+                      }
+                    }}
+                    className="w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-lg"
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-sm truncate">{room.name}</p>
-                        {room.description && (
-                          <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{room.description}</p>
-                        )}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-full overflow-hidden bg-slate-200 text-xs font-semibold text-slate-600 flex items-center justify-center flex-shrink-0">
+                          {room.avatarUrl ? (
+                            <img
+                              src={room.avatarUrl}
+                              alt={`Avatar de ${room.name}`}
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            initials
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-sm truncate">{room.name}</p>
+                          {room.description && (
+                            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{room.description}</p>
+                          )}
+                        </div>
                       </div>
-                      <button
-                        onClick={handleCopyCode}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-mono bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors"
-                        title="Copiar código"
-                      >
-                        {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                        {room.code}
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={handleCopyCode}
+                          className="flex items-center gap-1 px-2 py-1 text-xs font-mono bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors"
+                          title="Copiar c�digo"
+                        >
+                          {copiedRoomId === room.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                          {room.code}
+                        </button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          title="Cambiar foto de la sala"
+                          onClick={(event) => triggerAvatarPicker(room.id, event)}
+                          disabled={isUploadingAvatar}
+                        >
+                          {isUploadingAvatar ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Camera className="w-3 h-3" />
+                          )}
+                        </Button>
+                      </div>
                     </div>
                     <div className="flex items-center justify-between text-xs text-muted-foreground mt-2">
                       <span>{room.participants?.length || 1} participantes</span>
-                      <span className={cn(
-                        "font-medium",
-                        room.isPermanent && "text-green-600 dark:text-green-400"
-                      )}>
+                      <span
+                        className={cn(
+                          "font-medium",
+                          room.isPermanent && "text-green-600 dark:text-green-400"
+                        )}
+                      >
                         {formatTimeLeft(room)}
                       </span>
                     </div>
-                  </button>
+                  </div>
                 </div>
               );
             })}
           </div>
         </div>
       </div>
+      <input
+        ref={avatarInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={handleAvatarFileChange}
+      />
     </div>
   );
 }

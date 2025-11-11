@@ -6,6 +6,12 @@ import { sanitizeFilename, sanitizeUsername, isPathSafe } from '../utils/sanitiz
 
 const BASE_DIR = path.join(homedir(), 'Documents', 'ftp', 'Airplay');
 const ROOMS_DIR = path.join(BASE_DIR, 'rooms');
+const ROOM_AVATAR_MIME_MAP: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp'
+};
+const ROOM_AVATAR_SUPPORTED_EXTENSIONS = Object.values(ROOM_AVATAR_MIME_MAP);
 
 export class FileStorageService {
   /**
@@ -112,6 +118,59 @@ export class FileStorageService {
 
     await fs.mkdir(roomPath, { recursive: true });
     await fs.mkdir(filesPath, { recursive: true });
+  }
+
+  /**
+   * Elimina los avatares existentes de una sala
+   */
+  private static async deleteExistingRoomAvatars(roomId: string): Promise<void> {
+    const roomPath = this.getRoomPath(roomId);
+    try {
+      const files = await fs.readdir(roomPath);
+      await Promise.all(
+        files
+          .filter(file => ROOM_AVATAR_SUPPORTED_EXTENSIONS.some(ext => file === `avatar${ext}`))
+          .map(file => fs.unlink(path.join(roomPath, file)).catch(() => undefined))
+      );
+    } catch {
+      // Ignorar si la carpeta no existe
+    }
+  }
+
+  /**
+   * Guarda el avatar de una sala
+   */
+  static async saveRoomAvatar(roomId: string, data: Buffer, mimeType: string): Promise<string> {
+    const extension = ROOM_AVATAR_MIME_MAP[mimeType];
+    if (!extension) {
+      throw new Error(`Unsupported avatar mime type: ${mimeType}`);
+    }
+
+    await this.ensureRoomFolders(roomId);
+    await this.deleteExistingRoomAvatars(roomId);
+
+    const avatarFileName = `avatar${extension}`;
+    const avatarPath = path.join(this.getRoomPath(roomId), avatarFileName);
+    await fs.writeFile(avatarPath, data);
+    console.log(`[FileStorage] Saved room avatar: ${avatarPath}`);
+    return avatarFileName;
+  }
+
+  /**
+   * Obtiene el avatar actual de la sala (si existe)
+   */
+  static async getRoomAvatar(roomId: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
+    const roomPath = this.getRoomPath(roomId);
+    for (const [mimeType, extension] of Object.entries(ROOM_AVATAR_MIME_MAP)) {
+      const avatarPath = path.join(roomPath, `avatar${extension}`);
+      try {
+        const buffer = await fs.readFile(avatarPath);
+        return { buffer, mimeType };
+      } catch {
+        // Intentar con la siguiente extensión
+      }
+    }
+    return null;
   }
 
   /**

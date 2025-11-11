@@ -3,6 +3,7 @@ import type { User, Conversation } from '../../shared/types';
 import { db, InMemoryDB } from '../db/database';
 import { sanitizeUsername } from '../utils/sanitization';
 import { getWebSocketService } from '../services/websocket-service';
+import { FileStorageService } from '../services/file-storage';
 
 function getUserId(c: any): string | undefined {
   return c.req.header('X-User-Id');
@@ -18,6 +19,9 @@ function sanitizeRoomName(name: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+const ROOM_AVATAR_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const;
+const MAX_ROOM_AVATAR_SIZE = 2 * 1024 * 1024; // 2MB
 
 export function userRoutes(app: Hono) {
   // Middleware para actualizar presencia
@@ -415,6 +419,90 @@ export function userRoutes(app: Hono) {
     } catch (error) {
       console.error('[Rooms] Error sending room message:', error);
       return c.json({ success: false, error: 'Failed to send room message' }, 500);
+    }
+  });
+
+  // Actualizar avatar de una sala
+  app.put('/api/rooms/:roomId/avatar', async (c) => {
+    try {
+      const currentUserId = getUserId(c);
+      if (!currentUserId) {
+        return c.json({ success: false, error: 'Unauthorized: Missing X-User-Id header' }, 401);
+      }
+
+      const roomId = c.req.param('roomId');
+      const room = db.getRoomById(roomId);
+
+      if (!room) {
+        return c.json({ success: false, error: 'Sala no encontrada' }, 404);
+      }
+
+      const isParticipant = room.participants?.some((p: any) => p.userId === currentUserId);
+      if (!isParticipant) {
+        return c.json({ success: false, error: 'No participas en esta sala' }, 403);
+      }
+
+      const formData = await c.req.formData();
+      const avatarFile = formData.get('avatar');
+
+      if (!(avatarFile instanceof File)) {
+        return c.json({ success: false, error: 'Archivo de avatar requerido' }, 400);
+      }
+
+      if (!ROOM_AVATAR_MIME_TYPES.includes(avatarFile.type as any)) {
+        return c.json({ success: false, error: 'Formato de imagen no soportado (usa PNG, JPG o WEBP)' }, 400);
+      }
+
+      if (avatarFile.size === 0 || avatarFile.size > MAX_ROOM_AVATAR_SIZE) {
+        return c.json({ success: false, error: 'La imagen debe pesar menos de 2MB' }, 400);
+      }
+
+      const arrayBuffer = await avatarFile.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      await FileStorageService.saveRoomAvatar(roomId, buffer, avatarFile.type);
+      const avatarUrl = `/api/rooms/${roomId}/avatar?v=${Date.now()}`;
+      db.updateRoomAvatar(roomId, avatarUrl);
+
+      const updatedRoom = db.getRoomById(roomId);
+      return c.json({ success: true, data: updatedRoom });
+    } catch (error) {
+      console.error('[Rooms] Error updating room avatar:', error);
+      return c.json({ success: false, error: 'Failed to update room avatar' }, 500);
+    }
+  });
+
+  // Obtener avatar de una sala
+  app.get('/api/rooms/:roomId/avatar', async (c) => {
+    try {
+      const currentUserId = getUserId(c);
+      if (!currentUserId) {
+        return c.json({ success: false, error: 'Unauthorized: Missing X-User-Id header' }, 401);
+      }
+
+      const roomId = c.req.param('roomId');
+      const room = db.getRoomById(roomId);
+
+      if (!room) {
+        return c.json({ success: false, error: 'Sala no encontrada' }, 404);
+      }
+
+      const isParticipant = room.participants?.some((p: any) => p.userId === currentUserId);
+      if (!isParticipant) {
+        return c.json({ success: false, error: 'No participas en esta sala' }, 403);
+      }
+
+      const avatar = await FileStorageService.getRoomAvatar(roomId);
+      if (!avatar) {
+        return c.notFound();
+      }
+
+      c.header('Content-Type', avatar.mimeType);
+      c.header('Cache-Control', 'public, max-age=604800');
+      return c.body(avatar.buffer);
+    } catch (error) {
+      console.error('[Rooms] Error fetching room avatar:', error);
+      return c.json({ success: false, error: 'Failed to fetch room avatar' }, 500);
     }
   });
 }

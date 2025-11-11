@@ -130,6 +130,10 @@ class Database {
     this.sqlite.removeParticipantFromRoom(roomId, userId);
   }
 
+  updateRoomAvatar(roomId: string, avatarUrl: string | null): void {
+    this.sqlite.updateRoomAvatar(roomId, avatarUrl);
+  }
+
   addMessageToRoom(roomId: string, message: any): void {
     this.sqlite.addMessageToRoom(roomId, message);
   }

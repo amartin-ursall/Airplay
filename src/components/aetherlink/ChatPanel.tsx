@@ -566,13 +566,21 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
         {mobileNav}
         {isRoomChat && activeRoom ? (
           <div className="flex items-center gap-4 flex-1">
-            <div className="w-12 h-12 rounded-full bg-indigo-600 text-white font-semibold flex items-center justify-center shadow">
-              #{activeRoom.code}
+            <div className="w-12 h-12 rounded-2xl bg-indigo-600 text-white font-semibold flex items-center justify-center shadow overflow-hidden">
+              {activeRoom.avatarUrl ? (
+                <img
+                  src={activeRoom.avatarUrl}
+                  alt={`Avatar de ${activeRoom.name}`}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <>#{activeRoom.code}</>
+              )}
             </div>
-            <div className="flex-1">
-              <h2 className="text-lg font-semibold">{activeRoom.name}</h2>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-semibold truncate">{activeRoom.name}</h2>
               <p className="text-sm text-muted-foreground">
-                {activeRoom.participants?.length || 1} participantes • {formatRoomExpiration(activeRoom.expiresAt)}
+                {activeRoom.participants?.length || 1} participantes - {formatRoomExpiration(activeRoom.expiresAt)}
               </p>
             </div>
           </div>
@@ -580,8 +588,8 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
           recipient && (
             <div className="flex items-center gap-4 flex-1">
               <UserAvatar user={recipient} isOnline={recipient.online} />
-              <div className="flex-1">
-                <h2 className="text-lg font-semibold">{recipient.name}</h2>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-semibold truncate">{recipient.name}</h2>
                 <p className="text-sm text-muted-foreground">{recipient.online ? 'Online' : 'Offline'}</p>
               </div>
             </div>
