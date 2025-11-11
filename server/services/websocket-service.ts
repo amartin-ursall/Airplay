@@ -17,6 +17,10 @@ export type WSEventType =
   | 'users:update'   // Lista de usuarios actualizada
   | 'typing:start'   // Usuario empieza a escribir
   | 'typing:stop'    // Usuario deja de escribir
+  | 'room:created'   // Sala temporal creada
+  | 'room:message:new' // Nuevo mensaje en sala
+  | 'room:participant:joined' // Participante unido a sala
+  | 'room:participant:left'   // Participante salió de sala
   | 'error'          // Error en el servidor
   | 'ping'           // Heartbeat del cliente
   | 'pong';          // Respuesta heartbeat del servidor

@@ -39,9 +39,12 @@ export interface Room {
   id: string;
   code: string;
   name: string;
+  description?: string;
+  avatarUrl?: string;
   createdBy: string;
   createdAt: number;
-  expiresAt: number;
+  expiresAt?: number;
+  isPermanent: boolean;
   participants: RoomParticipant[];
 }
 

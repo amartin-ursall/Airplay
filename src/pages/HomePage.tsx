@@ -135,8 +135,10 @@ export function HomePage() {
   const fetchRooms = useCallback(async () => {
     if (!currentUser) return;
     try {
-      const roomList = await api<Room[]>('/api/rooms');
-      setRooms(roomList);
+      const rooms = await api<Room[]>(`/api/rooms?userId=${currentUser.id}`);
+      if (rooms) {
+        setRooms(rooms);
+      }
     } catch (error) {
       console.error("Failed to fetch rooms:", error);
     }

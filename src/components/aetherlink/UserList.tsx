@@ -5,9 +5,12 @@ import { useShallow } from 'zustand/react/shallow';
 import { UserAvatar } from "./UserAvatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { LogOut } from "lucide-react";
+import { LogOut, Copy, Check } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
+import { Checkbox } from "../ui/checkbox";
+import { Label } from "../ui/label";
 import { toast } from "@/components/ui/sonner";
 import type { Room } from "@shared/types";
 interface UserListProps {
@@ -38,6 +41,8 @@ export function UserList({ onUserSelect }: UserListProps) {
     }))
   );
   const [newRoomName, setNewRoomName] = useState('');
+  const [roomDescription, setRoomDescription] = useState('');
+  const [isPermanent, setIsPermanent] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [isCreatingRoom, setCreatingRoom] = useState(false);
   const [isJoiningRoom, setJoiningRoom] = useState(false);
@@ -56,6 +61,8 @@ export function UserList({ onUserSelect }: UserListProps) {
   }, [rooms]);
 
   const formatTimeLeft = (room: Room) => {
+    if (room.isPermanent) return 'Permanente';
+    if (!room.expiresAt) return 'Sin expiración';
     const diff = room.expiresAt - Date.now();
     if (diff <= 0) return 'Expirada';
     const hours = Math.floor(diff / (1000 * 60 * 60));
@@ -69,16 +76,28 @@ export function UserList({ onUserSelect }: UserListProps) {
       toast.error('El nombre de la sala es obligatorio');
       return;
     }
+    if (!currentUser) return;
+
     setCreatingRoom(true);
     try {
-      const room = await api<Room>('/api/rooms', {
+      const room = await api<Room>('/api/rooms/create', {
         method: 'POST',
-        body: JSON.stringify({ name: newRoomName.trim() })
+        body: JSON.stringify({
+          userId: currentUser.id,
+          roomName: newRoomName.trim(),
+          description: roomDescription.trim() || undefined,
+          isPermanent
+        })
       });
       setRoom(room);
       setActiveRoomId(room.id);
       setNewRoomName('');
-      toast.success(`Sala creada. Código: ${room.code}`);
+      setRoomDescription('');
+      setIsPermanent(false);
+      toast.success(`Sala ${isPermanent ? 'permanente' : 'temporal'} creada. Código: ${room.code}`, {
+        description: isPermanent ? 'Puedes compartir el código con otros' : 'Expira en 24 horas',
+        duration: 5000
+      });
     } catch (error: any) {
       console.error('Failed to create room:', error);
       toast.error(error?.message || 'No se pudo crear la sala');
@@ -92,11 +111,13 @@ export function UserList({ onUserSelect }: UserListProps) {
       toast.error('Introduce un código de sala');
       return;
     }
+    if (!currentUser) return;
+
     setJoiningRoom(true);
     try {
       const room = await api<Room>('/api/rooms/join', {
         method: 'POST',
-        body: JSON.stringify({ code: joinCode.trim() })
+        body: JSON.stringify({ userId: currentUser.id, code: joinCode.trim() })
       });
       setRoom(room);
       setActiveRoomId(room.id);
@@ -146,16 +167,43 @@ export function UserList({ onUserSelect }: UserListProps) {
       </ScrollArea>
       <div className="border-t border-slate-200 dark:border-slate-800 p-4 space-y-4">
         <div>
-          <h3 className="text-sm font-medium text-muted-foreground mb-2">Crear sala temporal (24h)</h3>
-          <div className="flex gap-2">
+          <h3 className="text-sm font-medium text-muted-foreground mb-2">Crear sala</h3>
+          <div className="space-y-3">
             <Input
               placeholder="Nombre de la sala"
               value={newRoomName}
               onChange={(e) => setNewRoomName(e.target.value)}
               className="text-sm"
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  handleCreateRoom();
+                }
+              }}
             />
-            <Button size="sm" onClick={handleCreateRoom} disabled={isCreatingRoom}>
-              {isCreatingRoom ? 'Creando...' : 'Crear'}
+            <Textarea
+              placeholder="Descripción (opcional)"
+              value={roomDescription}
+              onChange={(e) => setRoomDescription(e.target.value)}
+              className="text-sm resize-none"
+              rows={2}
+            />
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="permanent"
+                checked={isPermanent}
+                onCheckedChange={(checked) => setIsPermanent(checked as boolean)}
+              />
+              <Label htmlFor="permanent" className="text-sm cursor-pointer">
+                Sala permanente (no expira)
+              </Label>
+            </div>
+            <Button
+              size="sm"
+              onClick={handleCreateRoom}
+              disabled={isCreatingRoom}
+              className="w-full"
+            >
+              {isCreatingRoom ? 'Creando...' : 'Crear Sala'}
             </Button>
           </div>
         </div>
@@ -174,32 +222,65 @@ export function UserList({ onUserSelect }: UserListProps) {
           </div>
         </div>
         <div>
-          <h3 className="text-sm font-medium text-muted-foreground mb-2">Salas temporales ({sortedRooms.length})</h3>
+          <h3 className="text-sm font-medium text-muted-foreground mb-2">Mis Salas ({sortedRooms.length})</h3>
           <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
             {sortedRooms.length === 0 && (
               <p className="text-xs text-muted-foreground">Crea una sala o introduce un código para unirte.</p>
             )}
-            {sortedRooms.map((room) => (
-              <button
-                key={room.id}
-                onClick={() => handleSelectRoom(room.id)}
-                className={cn(
-                  "w-full p-3 rounded-lg border text-left transition-colors",
-                  activeRoomId === room.id
-                    ? "border-indigo-500 bg-indigo-500/10 text-indigo-600"
-                    : "border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                )}
-              >
-                <div className="flex items-center justify-between">
-                  <p className="font-semibold text-sm">{room.name}</p>
-                  <span className="text-xs font-mono text-muted-foreground">#{room.code}</span>
+            {sortedRooms.map((room) => {
+              const [copied, setCopied] = useState(false);
+
+              const handleCopyCode = (e: React.MouseEvent) => {
+                e.stopPropagation();
+                navigator.clipboard.writeText(room.code);
+                setCopied(true);
+                toast.success('Código copiado');
+                setTimeout(() => setCopied(false), 2000);
+              };
+
+              return (
+                <div
+                  key={room.id}
+                  className={cn(
+                    "w-full p-3 rounded-lg border transition-colors",
+                    activeRoomId === room.id
+                      ? "border-indigo-500 bg-indigo-500/10"
+                      : "border-slate-200 dark:border-slate-700"
+                  )}
+                >
+                  <button
+                    onClick={() => handleSelectRoom(room.id)}
+                    className="w-full text-left"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-sm truncate">{room.name}</p>
+                        {room.description && (
+                          <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{room.description}</p>
+                        )}
+                      </div>
+                      <button
+                        onClick={handleCopyCode}
+                        className="flex items-center gap-1 px-2 py-1 text-xs font-mono bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors"
+                        title="Copiar código"
+                      >
+                        {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        {room.code}
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground mt-2">
+                      <span>{room.participants?.length || 1} participantes</span>
+                      <span className={cn(
+                        "font-medium",
+                        room.isPermanent && "text-green-600 dark:text-green-400"
+                      )}>
+                        {formatTimeLeft(room)}
+                      </span>
+                    </div>
+                  </button>
                 </div>
-                <div className="flex items-center justify-between text-xs text-muted-foreground mt-1">
-                  <span>{room.participants?.length || 1} participantes</span>
-                  <span>{formatTimeLeft(room)}</span>
-                </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

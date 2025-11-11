@@ -1,0 +1,1 @@
+powershell -Command "Get-NetTCPConnection -LocalPort 3001,5001 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Write-Host 'Procesos detenidos en puertos 3001 y 5001'"

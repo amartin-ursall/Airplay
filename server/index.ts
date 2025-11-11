@@ -5,6 +5,7 @@ import { serve } from '@hono/node-server';
 import { networkInterfaces } from 'os';
 import { userRoutes } from './routes/user-routes';
 import { fileRoutes } from './routes/file-routes';
+import { roomRoutes } from './routes/room-routes';
 import { startFTPServer, FTPServerService } from './services/ftp-server';
 import { db } from './db/database';
 import { initWebSocketService } from './services/websocket-service';
@@ -42,6 +43,7 @@ app.post('/api/client-errors', async (c) => {
 // Register routes
 userRoutes(app);
 fileRoutes(app);
+roomRoutes(app);
 
 // Not found handler
 app.notFound((c) => c.json({ success: false, error: 'Not Found' }, 404));

@@ -77,6 +77,10 @@ export const useAppStore = create<AppState & AppActions>()(
     },
     setRooms: (rooms) => {
       set((state) => {
+        if (!rooms || !Array.isArray(rooms)) {
+          state.rooms = {};
+          return;
+        }
         state.rooms = rooms.reduce<Record<string, Room>>((acc, room) => {
           acc[room.id] = room;
           return acc;

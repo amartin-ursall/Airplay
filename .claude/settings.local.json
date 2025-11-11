@@ -9,7 +9,9 @@
       "Bash(findstr:*)",
       "Bash(if not exist logs mkdir logs)",
       "Bash(mkdir:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(tasklist:*)",
+      "Bash(Select-String -Pattern \"room\" -Context 2,2)"
     ],
     "deny": [],
     "ask": []

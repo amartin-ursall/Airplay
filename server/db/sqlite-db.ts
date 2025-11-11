@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import { homedir } from 'os';
+import { existsSync, mkdirSync } from 'fs';
 import type { User, Conversation, Message, FileMetadata } from '../../shared/types';
 
 // Ubicación de la base de datos
@@ -17,9 +18,8 @@ export class SQLiteDatabase {
 
   constructor(dbPath: string = DB_PATH) {
     // Crear el directorio si no existe
-    const fs = require('fs');
-    if (!fs.existsSync(DB_DIR)) {
-      fs.mkdirSync(DB_DIR, { recursive: true });
+    if (!existsSync(DB_DIR)) {
+      mkdirSync(DB_DIR, { recursive: true });
     }
 
     // Abrir/crear la base de datos
@@ -111,9 +111,12 @@ export class SQLiteDatabase {
         id TEXT PRIMARY KEY,
         code TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
+        description TEXT,
+        avatar_url TEXT,
         created_by TEXT NOT NULL,
         created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
-        expires_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        is_permanent INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
@@ -548,9 +551,19 @@ export class SQLiteDatabase {
   }
 
   /**
-   * Crea una nueva sala temporal
+   * Crea una nueva sala (temporal o permanente)
    */
-  createRoom(roomId: string, name: string, createdBy: string, expiresInHours: number = 24): { id: string; code: string } {
+  createRoom(
+    roomId: string,
+    name: string,
+    createdBy: string,
+    options: {
+      expiresInHours?: number;
+      isPermanent?: boolean;
+      description?: string;
+      avatarUrl?: string;
+    } = {}
+  ): { id: string; code: string } {
     // Generar código único
     let code = this.generateRoomCode();
     let attempts = 0;
@@ -559,15 +572,16 @@ export class SQLiteDatabase {
       attempts++;
     }
 
-    const expiresAt = Date.now() + (expiresInHours * 60 * 60 * 1000);
+    const { expiresInHours = 24, isPermanent = false, description, avatarUrl } = options;
+    const expiresAt = isPermanent ? null : Date.now() + (expiresInHours * 60 * 60 * 1000);
 
     const transaction = this.db.transaction(() => {
       // Crear sala
       const stmtRoom = this.db.prepare(`
-        INSERT INTO rooms (id, code, name, created_by, expires_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO rooms (id, code, name, description, avatar_url, created_by, expires_at, is_permanent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      stmtRoom.run(roomId, code, name, createdBy, expiresAt);
+      stmtRoom.run(roomId, code, name, description || null, avatarUrl || null, createdBy, expiresAt, isPermanent ? 1 : 0);
 
       // Agregar creador como participante
       const stmtParticipant = this.db.prepare(`
@@ -578,7 +592,7 @@ export class SQLiteDatabase {
     });
 
     transaction();
-    console.log(`[SQLite] Sala creada: ${name} (${roomId}) - Código: ${code}`);
+    console.log(`[SQLite] Sala ${isPermanent ? 'permanente' : 'temporal'} creada: ${name} (${roomId}) - Código: ${code}`);
 
     return { id: roomId, code };
   }
@@ -588,15 +602,19 @@ export class SQLiteDatabase {
    */
   getRoomByCode(code: string): any {
     const stmt = this.db.prepare(`
-      SELECT id, code, name, created_by as createdBy, created_at as createdAt, expires_at as expiresAt
+      SELECT id, code, name, description, avatar_url as avatarUrl, created_by as createdBy,
+             created_at as createdAt, expires_at as expiresAt, is_permanent as isPermanent
       FROM rooms WHERE code = ?
     `);
 
     const room = stmt.get(code) as any;
     if (!room) return null;
 
-    // Verificar si expiró
-    if (room.expiresAt < Date.now()) {
+    // Convertir isPermanent de number a boolean
+    room.isPermanent = Boolean(room.isPermanent);
+
+    // Verificar si expiró (solo para salas temporales)
+    if (!room.isPermanent && room.expiresAt && room.expiresAt < Date.now()) {
       this.deleteRoom(room.id);
       return null;
     }
@@ -617,15 +635,19 @@ export class SQLiteDatabase {
    */
   getRoomById(roomId: string): any {
     const stmt = this.db.prepare(`
-      SELECT id, code, name, created_by as createdBy, created_at as createdAt, expires_at as expiresAt
+      SELECT id, code, name, description, avatar_url as avatarUrl, created_by as createdBy,
+             created_at as createdAt, expires_at as expiresAt, is_permanent as isPermanent
       FROM rooms WHERE id = ?
     `);
 
     const room = stmt.get(roomId) as any;
     if (!room) return null;
 
-    // Verificar si expiró
-    if (room.expiresAt < Date.now()) {
+    // Convertir isPermanent de number a boolean
+    room.isPermanent = Boolean(room.isPermanent);
+
+    // Verificar si expiró (solo para salas temporales)
+    if (!room.isPermanent && room.expiresAt && room.expiresAt < Date.now()) {
       this.deleteRoom(room.id);
       return null;
     }
@@ -734,18 +756,22 @@ export class SQLiteDatabase {
   }
 
   /**
-   * Obtiene todas las salas activas (no expiradas)
+   * Obtiene todas las salas activas (no expiradas y permanentes)
    */
   getActiveRooms(): any[] {
     const now = Date.now();
     const stmt = this.db.prepare(`
-      SELECT id, code, name, created_by as createdBy, created_at as createdAt, expires_at as expiresAt
+      SELECT id, code, name, description, avatar_url as avatarUrl, created_by as createdBy,
+             created_at as createdAt, expires_at as expiresAt, is_permanent as isPermanent
       FROM rooms
-      WHERE expires_at > ?
+      WHERE is_permanent = 1 OR expires_at > ?
       ORDER BY created_at DESC
     `);
 
-    return stmt.all(now);
+    return stmt.all(now).map(room => ({
+      ...room,
+      isPermanent: Boolean(room.isPermanent)
+    }));
   }
 
   /**
@@ -754,14 +780,18 @@ export class SQLiteDatabase {
   getUserRooms(userId: string): any[] {
     const now = Date.now();
     const stmt = this.db.prepare(`
-      SELECT r.id, r.code, r.name, r.created_by as createdBy, r.created_at as createdAt, r.expires_at as expiresAt
+      SELECT r.id, r.code, r.name, r.description, r.avatar_url as avatarUrl, r.created_by as createdBy,
+             r.created_at as createdAt, r.expires_at as expiresAt, r.is_permanent as isPermanent
       FROM rooms r
       INNER JOIN room_participants rp ON r.id = rp.room_id
-      WHERE rp.user_id = ? AND r.expires_at > ?
+      WHERE rp.user_id = ? AND (r.is_permanent = 1 OR r.expires_at > ?)
       ORDER BY r.created_at DESC
     `);
 
-    return stmt.all(userId, now);
+    return stmt.all(userId, now).map(room => ({
+      ...room,
+      isPermanent: Boolean(room.isPermanent)
+    }));
   }
 
   /**

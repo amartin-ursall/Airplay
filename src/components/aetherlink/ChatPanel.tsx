@@ -4,14 +4,19 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { api } from "@/lib/api-client";
 import { UserAvatar } from "./UserAvatar";
 import { Message } from "./Message";
+import { FileSearch } from "./FileSearch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { Upload, Bot, Send, Paperclip } from "lucide-react";
+import { Upload, Bot, Send, Paperclip, Search } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
 import type { Conversation, Message as MessageType, Room, RoomMessage } from "@shared/types";
 import { motion, AnimatePresence } from "framer-motion";
 import { usePolling } from "@/hooks/use-polling";
+import {
+  Sheet,
+  SheetContent,
+} from "@/components/ui/sheet";
 const CHUNK_SIZE = 512 * 1024; // 512KB chunks - smaller for better reliability
 const MAX_FILE_SIZE = 350 * 1024 * 1024; // 350MB maximum file size
 const CHUNK_TIMEOUT = 120000; // 120 seconds timeout per chunk (2 minutes)
@@ -72,6 +77,7 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
   const [textMessage, setTextMessage] = useState('');
   const [uploadQueue, setUploadQueue] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [showFileSearch, setShowFileSearch] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
@@ -559,11 +565,11 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
       <header className="flex items-center gap-4 p-4 border-b border-slate-200 dark:border-slate-800 bg-background">
         {mobileNav}
         {isRoomChat && activeRoom ? (
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 flex-1">
             <div className="w-12 h-12 rounded-full bg-indigo-600 text-white font-semibold flex items-center justify-center shadow">
               #{activeRoom.code}
             </div>
-            <div>
+            <div className="flex-1">
               <h2 className="text-lg font-semibold">{activeRoom.name}</h2>
               <p className="text-sm text-muted-foreground">
                 {activeRoom.participants?.length || 1} participantes • {formatRoomExpiration(activeRoom.expiresAt)}
@@ -572,15 +578,23 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
           </div>
         ) : (
           recipient && (
-            <>
+            <div className="flex items-center gap-4 flex-1">
               <UserAvatar user={recipient} isOnline={recipient.online} />
-              <div>
+              <div className="flex-1">
                 <h2 className="text-lg font-semibold">{recipient.name}</h2>
                 <p className="text-sm text-muted-foreground">{recipient.online ? 'Online' : 'Offline'}</p>
               </div>
-            </>
+            </div>
           )
         )}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setShowFileSearch(true)}
+          title="Buscar archivos"
+        >
+          <Search className="w-5 h-5" />
+        </Button>
       </header>
       <ScrollArea className="flex-1 bg-slate-50 dark:bg-slate-900/50" ref={scrollAreaRef}>
         <div className="p-4 md:p-6">
@@ -596,6 +610,7 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
                 currentMessages.map((msg) => (
                   <motion.div
                     key={msg.id}
+                    data-message-id={msg.id}
                     layout
                     initial={{ opacity: 0, scale: 0.8, y: 50 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -711,6 +726,25 @@ export function ChatPanel({ mobileNav }: ChatPanelProps) {
         </div>
         <p className="text-xs text-muted-foreground text-center mt-2">Tamaño máximo de archivo: 350 MB • Presione Enter para enviar</p>
       </footer>
+
+      {/* File Search Sheet */}
+      <Sheet open={showFileSearch} onOpenChange={setShowFileSearch}>
+        <SheetContent side="right" className="w-full sm:max-w-lg p-0">
+          <FileSearch
+            messages={currentMessages}
+            onFileClick={(msg) => {
+              // Scroll to the message in the chat
+              const messageElement = document.querySelector(`[data-message-id="${msg.id}"]`);
+              if (messageElement) {
+                messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+              setShowFileSearch(false);
+            }}
+            onClose={() => setShowFileSearch(false)}
+          />
+        </SheetContent>
+      </Sheet>
+
       <Toaster richColors />
     </div>
   );

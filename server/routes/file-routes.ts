@@ -295,6 +295,9 @@ export function fileRoutes(app: Hono) {
         jpeg: 'image/jpeg',
         png: 'image/png',
         gif: 'image/gif',
+        webp: 'image/webp',
+        bmp: 'image/bmp',
+        svg: 'image/svg+xml',
         txt: 'text/plain',
         doc: 'application/msword',
         docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -342,6 +345,84 @@ export function fileRoutes(app: Hono) {
     } catch (error) {
       console.error('[FileList] Error:', error);
       return c.json({ success: false, error: 'Failed to list files' }, 500);
+    }
+  });
+
+  // Buscar archivos en una conversación o sala
+  app.get('/api/files/search', async (c) => {
+    try {
+      const currentUserId = getUserId(c);
+
+      if (!currentUserId) {
+        return c.json({ success: false, error: 'Unauthorized: Missing X-User-Id header' }, 401);
+      }
+
+      const otherUserId = c.req.query('otherUserId');
+      const roomId = c.req.query('roomId');
+      const query = c.req.query('query')?.toLowerCase() || '';
+      const fileType = c.req.query('type');
+
+      const hasRecipient = Boolean(otherUserId);
+      const hasRoom = Boolean(roomId);
+
+      if ((hasRecipient && hasRoom) || (!hasRecipient && !hasRoom)) {
+        return c.json({ success: false, error: 'Provide either otherUserId or roomId' }, 400);
+      }
+
+      let messages: any[] = [];
+
+      if (hasRecipient) {
+        const conversationId = InMemoryDB.getConversationId(currentUserId, otherUserId!);
+        const conversation = db.getConversation(conversationId);
+        messages = conversation?.messages || [];
+      } else if (roomId) {
+        const result = ensureRoomAccess(currentUserId, roomId);
+        if ('error' in result) {
+          return c.json({ success: false, error: result.error.message }, result.error.status);
+        }
+        messages = db.getRoomMessages(roomId);
+      }
+
+      // Filter only file messages
+      let fileMessages = messages.filter(msg => msg.type === 'file' && msg.file);
+
+      // Apply search query filter
+      if (query) {
+        fileMessages = fileMessages.filter(msg =>
+          msg.file?.name.toLowerCase().includes(query)
+        );
+      }
+
+      // Apply file type filter
+      if (fileType) {
+        fileMessages = fileMessages.filter(msg => {
+          const ext = msg.file?.name.toLowerCase().substring(msg.file.name.lastIndexOf('.'));
+          const mimeType = msg.file?.type;
+
+          switch (fileType) {
+            case 'images':
+              return mimeType?.startsWith('image/') || ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'].includes(ext || '');
+            case 'videos':
+              return mimeType?.startsWith('video/') || ['.mp4', '.avi', '.mov', '.mkv', '.webm'].includes(ext || '');
+            case 'audio':
+              return mimeType?.startsWith('audio/') || ['.mp3', '.wav', '.ogg', '.m4a'].includes(ext || '');
+            case 'documents':
+              return ['.pdf', '.doc', '.docx', '.txt', '.md', '.xls', '.xlsx', '.ppt', '.pptx'].includes(ext || '');
+            case 'archives':
+              return ['.zip', '.rar', '.7z', '.tar', '.gz'].includes(ext || '');
+            default:
+              return true;
+          }
+        });
+      }
+
+      // Sort by timestamp (newest first)
+      fileMessages.sort((a, b) => b.timestamp - a.timestamp);
+
+      return c.json({ success: true, data: fileMessages });
+    } catch (error) {
+      console.error('[FileSearch] Error:', error);
+      return c.json({ success: false, error: 'Failed to search files' }, 500);
     }
   });
 }
